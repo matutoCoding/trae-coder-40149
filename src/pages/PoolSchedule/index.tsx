@@ -1,7 +1,6 @@
-
 import { useState, useMemo } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { ChevronLeft, ChevronRight, Plus, Settings, Clock, Users, X, Edit2, Trash2, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Settings, Clock, Users, X, Edit2, Trash2, CheckCircle2, AlertTriangle, Check } from 'lucide-react';
 import { format, addDays, startOfWeek, endOfWeek, isSameDay, addWeeks } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import type { Pool, Appointment } from '@/types';
@@ -22,6 +21,8 @@ export default function PoolSchedule() {
     addAppointment,
     updateAppointment,
     cancelAppointment,
+    completeAppointment,
+    checkCapacityConflict,
   } = useAppStore();
 
   const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
@@ -41,6 +42,11 @@ export default function PoolSchedule() {
     startTime: '09:00',
     endTime: '09:45',
   });
+  const [capacityWarning, setCapacityWarning] = useState<{
+    conflict: boolean;
+    conflictingBabies: { babyId: string; babyName: string }[];
+    remainSlots: number;
+  } | null>(null);
 
   const weekStart = startOfWeek(currentWeekStart, { weekStartsOn: 1 });
   const weekEnd = endOfWeek(currentWeekStart, { weekStartsOn: 1 });
@@ -56,6 +62,16 @@ export default function PoolSchedule() {
     return filteredAppointments.filter(
       (a) => a.date === dateStr && a.startTime <= time && a.endTime > time
     );
+  };
+
+  const getSlotCapacityInfo = (date: Date, startTime: string) => {
+    const dateStr = format(date, 'yyyy-MM-dd');
+    const pool = pools.find((p) => p.id === selectedPool);
+    const capacity = pool?.capacity || 0;
+    const count = filteredAppointments.filter(
+      (a) => a.date === dateStr && a.startTime === startTime && a.status !== 'cancelled'
+    ).length;
+    return { count, capacity };
   };
 
   const handlePrevWeek = () => setCurrentWeekStart(addWeeks(currentWeekStart, -1));
@@ -97,6 +113,7 @@ export default function PoolSchedule() {
   const openAddAppointment = () => {
     setIsEditAppointment(false);
     setEditingAppointmentId(null);
+    setCapacityWarning(null);
     setAppointmentForm({
       babyId: babies[0]?.id || '',
       poolId: selectedPool,
@@ -110,6 +127,7 @@ export default function PoolSchedule() {
   const openEditAppointment = (apt: Appointment) => {
     setIsEditAppointment(true);
     setEditingAppointmentId(apt.id);
+    setCapacityWarning(null);
     setAppointmentForm({
       babyId: apt.babyId,
       poolId: apt.poolId,
@@ -122,6 +140,23 @@ export default function PoolSchedule() {
 
   const handleSaveAppointment = () => {
     if (!appointmentForm.babyId || !appointmentForm.poolId) return;
+
+    const result = checkCapacityConflict(
+      appointmentForm.poolId,
+      appointmentForm.date,
+      appointmentForm.startTime,
+      appointmentForm.endTime,
+      isEditAppointment && editingAppointmentId ? editingAppointmentId : undefined
+    );
+
+    if (result.conflict) {
+      setCapacityWarning({
+        conflict: result.conflict,
+        conflictingBabies: result.conflictingBabies,
+        remainSlots: result.remainSlots,
+      });
+      return;
+    }
 
     if (isEditAppointment && editingAppointmentId) {
       updateAppointment(editingAppointmentId, {
@@ -138,6 +173,7 @@ export default function PoolSchedule() {
         isFromCycle: false,
       });
     }
+    setCapacityWarning(null);
     setShowAppointmentModal(false);
   };
 
@@ -147,7 +183,17 @@ export default function PoolSchedule() {
     }
   };
 
+  const handleCompleteAppointment = () => {
+    if (!editingAppointmentId) return;
+    completeAppointment(editingAppointmentId, '前台');
+    setShowAppointmentModal(false);
+  };
+
   const currentPool = pools.find((p) => p.id === selectedPool);
+
+  const editingAppointment = editingAppointmentId
+    ? appointments.find((a) => a.id === editingAppointmentId)
+    : null;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -264,14 +310,25 @@ export default function PoolSchedule() {
                   {weekDays.map((day) => {
                     const slotAppointments = getAppointmentsForSlot(day, time);
                     const isToday = isSameDay(day, new Date());
+                    const { count, capacity } = getSlotCapacityInfo(day, time);
+                    const isFull = capacity > 0 && count >= capacity;
 
                     return (
                       <div
                         key={`${day.toISOString()}-${time}`}
-                        className={`min-h-[60px] p-1.5 rounded-xl transition-colors ${
+                        className={`min-h-[60px] p-1.5 rounded-xl transition-colors relative ${
                           isToday ? 'bg-primary-50/50' : 'bg-gray-50/50'
                         } hover:bg-gray-100/50`}
                       >
+                        <div className={`absolute top-1 right-1 text-[10px] font-medium px-1 rounded ${
+                          isFull
+                            ? 'bg-danger-100 text-danger-600'
+                            : count > 0
+                              ? 'bg-primary-100 text-primary-600'
+                              : 'text-gray-400'
+                        }`}>
+                          {count}/{capacity}
+                        </div>
                         {slotAppointments.length > 0 && (
                           <div className="space-y-1">
                             {slotAppointments.map((apt) => {
@@ -492,19 +549,32 @@ export default function PoolSchedule() {
 
       <Modal
         isOpen={showAppointmentModal}
-        onClose={() => setShowAppointmentModal(false)}
+        onClose={() => {
+          setShowAppointmentModal(false);
+          setCapacityWarning(null);
+        }}
         title={isEditAppointment ? '编辑预约' : '新建预约'}
         size="sm"
         footer={
           <>
-            <button onClick={() => setShowAppointmentModal(false)} className="btn-secondary">
+            <button onClick={() => { setShowAppointmentModal(false); setCapacityWarning(null); }} className="btn-secondary">
               取消
             </button>
+            {isEditAppointment && editingAppointment?.status === 'scheduled' && (
+              <button
+                onClick={handleCompleteAppointment}
+                className="bg-success-500 hover:bg-success-600 text-white px-4 py-2 rounded-xl font-medium transition-colors flex items-center gap-1"
+              >
+                <Check className="w-4 h-4" />
+                完成游泳
+              </button>
+            )}
             {isEditAppointment && (
               <button
                 onClick={() => {
                   if (editingAppointmentId) handleCancelAppointment(editingAppointmentId);
                   setShowAppointmentModal(false);
+                  setCapacityWarning(null);
                 }}
                 className="btn-danger"
               >
@@ -519,11 +589,30 @@ export default function PoolSchedule() {
         }
       >
         <div className="space-y-4">
+          {capacityWarning && capacityWarning.conflict && (
+            <div className="bg-danger-50 border border-danger-200 rounded-xl p-4">
+              <div className="flex items-center gap-2 text-danger-700 font-medium mb-2">
+                <AlertTriangle className="w-5 h-5" />
+                该时段已满，剩余名额: 0
+              </div>
+              <div className="text-sm text-danger-600">
+                <p className="mb-1">已预约宝宝：</p>
+                <div className="flex flex-wrap gap-1">
+                  {capacityWarning.conflictingBabies.map((b) => (
+                    <span key={b.babyId} className="bg-danger-100 text-danger-700 px-2 py-0.5 rounded-full text-xs">
+                      {b.babyName}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-2 text-danger-500">请更换泳池或时间后再试</p>
+              </div>
+            </div>
+          )}
           <div>
             <label className="text-sm text-gray-600 mb-1 block">选择宝宝</label>
             <select
               value={appointmentForm.babyId}
-              onChange={(e) => setAppointmentForm({ ...appointmentForm, babyId: e.target.value })}
+              onChange={(e) => { setAppointmentForm({ ...appointmentForm, babyId: e.target.value }); setCapacityWarning(null); }}
               className="input-field"
             >
               {babies.map((baby) => (
@@ -537,7 +626,7 @@ export default function PoolSchedule() {
             <label className="text-sm text-gray-600 mb-1 block">选择泳池</label>
             <select
               value={appointmentForm.poolId}
-              onChange={(e) => setAppointmentForm({ ...appointmentForm, poolId: e.target.value })}
+              onChange={(e) => { setAppointmentForm({ ...appointmentForm, poolId: e.target.value }); setCapacityWarning(null); }}
               className="input-field"
             >
               {pools.filter((p) => p.status === 'active').map((pool) => (
@@ -552,7 +641,7 @@ export default function PoolSchedule() {
             <input
               type="date"
               value={appointmentForm.date}
-              onChange={(e) => setAppointmentForm({ ...appointmentForm, date: e.target.value })}
+              onChange={(e) => { setAppointmentForm({ ...appointmentForm, date: e.target.value }); setCapacityWarning(null); }}
               className="input-field"
             />
           </div>
@@ -563,7 +652,7 @@ export default function PoolSchedule() {
                 type="time"
                 step="900"
                 value={appointmentForm.startTime}
-                onChange={(e) => setAppointmentForm({ ...appointmentForm, startTime: e.target.value })}
+                onChange={(e) => { setAppointmentForm({ ...appointmentForm, startTime: e.target.value }); setCapacityWarning(null); }}
                 className="input-field"
               />
             </div>
@@ -573,7 +662,7 @@ export default function PoolSchedule() {
                 type="time"
                 step="900"
                 value={appointmentForm.endTime}
-                onChange={(e) => setAppointmentForm({ ...appointmentForm, endTime: e.target.value })}
+                onChange={(e) => { setAppointmentForm({ ...appointmentForm, endTime: e.target.value }); setCapacityWarning(null); }}
                 className="input-field"
               />
             </div>

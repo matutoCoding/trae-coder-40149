@@ -2,7 +2,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { startOfWeek, startOfMonth, isAfter, parseISO } from 'date-fns';
-import type { Pool, Baby, Appointment, MemberCard, Consumption, WaterRecord, CycleRule } from '@/types';
+import type { Pool, Baby, Appointment, MemberCard, Consumption, WaterRecord, CycleRule, PreviewAppointment, GenerationResult } from '@/types';
 import {
   pools as initialPools,
   babies as initialBabies,
@@ -23,6 +23,7 @@ interface AppState {
   cycleRules: CycleRule[];
   currentCycleRule: CycleRule | null;
   lastAutoResetDate: string | null;
+  previewAppointments: PreviewAppointment[];
 
   setCurrentCycleRule: (rule: CycleRule) => void;
 
@@ -30,6 +31,7 @@ interface AppState {
   updateAppointment: (id: string, updates: Partial<Appointment>) => void;
   deleteAppointment: (id: string) => void;
   cancelAppointment: (id: string) => void;
+  completeAppointment: (appointmentId: string, operator: string) => void;
 
   addBaby: (baby: Omit<Baby, 'id'>) => Baby;
   updateBaby: (id: string, updates: Partial<Baby>) => void;
@@ -47,7 +49,6 @@ interface AppState {
   resetQuota: (babyId: string) => void;
   resetAllQuotas: () => void;
   checkAndResetCycleQuotas: () => { weeklyReset: number; monthlyReset: number };
-  consumeQuota: (babyId: string, type: 'quota' | 'self-pay', amount: number, operator?: string) => void;
 
   addWaterRecord: (record: Omit<WaterRecord, 'id'>) => WaterRecord;
 
@@ -56,7 +57,17 @@ interface AppState {
   deleteCycleRule: (id: string) => void;
   setDefaultCycleRule: (id: string) => void;
 
-  generateCycleAppointments: (startDate: string, endDate: string, cycleRuleId: string) => number;
+  previewCycleAppointments: (startDate: string, endDate: string, cycleRuleId: string) => GenerationResult;
+  confirmPreviewAppointments: (cycleRuleId: string) => number;
+  clearPreview: () => void;
+
+  checkCapacityConflict: (poolId: string, date: string, startTime: string, endTime: string, excludeAppointmentId?: string) => {
+    conflict: boolean;
+    currentCount: number;
+    capacity: number;
+    conflictingBabies: { babyId: string; babyName: string }[];
+    remainSlots: number;
+  };
 }
 
 export const useAppStore = create<AppState>()(
@@ -71,6 +82,7 @@ export const useAppStore = create<AppState>()(
       cycleRules: initialCycleRules,
       currentCycleRule: initialCycleRules.find((r) => r.isDefault) || null,
       lastAutoResetDate: null,
+      previewAppointments: [],
 
       setCurrentCycleRule: (rule) => set({ currentCycleRule: rule }),
 
@@ -101,6 +113,69 @@ export const useAppStore = create<AppState>()(
             a.id === id ? { ...a, status: 'cancelled' as const } : a
           ),
         })),
+
+      completeAppointment: (appointmentId, operator = '前台') => {
+        const state = get();
+        const appointment = state.appointments.find((a) => a.id === appointmentId);
+        if (!appointment || appointment.status !== 'scheduled') return;
+
+        const card = state.memberCards.find((c) => c.babyId === appointment.babyId);
+        let consumptionType: 'quota' | 'self-pay' = 'quota';
+        let amount = 0;
+        let remark = '';
+        let cardId: string | undefined;
+
+        if (card && card.remainingQuota > 0) {
+          consumptionType = 'quota';
+          amount = 0;
+          cardId = card.id;
+          remark = `次卡扣费 - ${card.cardType}`;
+        } else if (card) {
+          consumptionType = 'self-pay';
+          amount = card.selfPayPrice;
+          cardId = card.id;
+          remark = `自费消费 - ${appointment.date} ${appointment.startTime}~${appointment.endTime}`;
+        } else {
+          consumptionType = 'self-pay';
+          amount = 88;
+          remark = `自费消费 - 无次卡`;
+        }
+
+        const newConsumption: Consumption = {
+          id: `cons-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          babyId: appointment.babyId,
+          appointmentId,
+          cardId,
+          type: consumptionType,
+          amount,
+          time: new Date().toISOString().replace('T', ' ').slice(0, 16),
+          operator,
+          remark,
+        };
+
+        set((state) => {
+          const newAppointments = state.appointments.map((a) =>
+            a.id === appointmentId
+              ? { ...a, status: 'completed' as const, consumptionId: newConsumption.id }
+              : a
+          );
+
+          let newCards = state.memberCards;
+          if (consumptionType === 'quota' && card) {
+            newCards = state.memberCards.map((c) =>
+              c.id === card.id
+                ? { ...c, remainingQuota: Math.max(0, c.remainingQuota - 1) }
+                : c
+            );
+          }
+
+          return {
+            appointments: newAppointments,
+            consumptions: [newConsumption, ...state.consumptions],
+            memberCards: newCards,
+          };
+        });
+      },
 
       addBaby: (baby) => {
         const newBaby: Baby = {
@@ -245,38 +320,6 @@ export const useAppStore = create<AppState>()(
         return { weeklyReset, monthlyReset };
       },
 
-      consumeQuota: (babyId, type, amount, operator = '系统') => {
-        const state = get();
-        const card = state.memberCards.find((c) => c.babyId === babyId);
-
-        if (type === 'quota' && card && card.remainingQuota > 0) {
-          set((state) => ({
-            memberCards: state.memberCards.map((c) =>
-              c.babyId === babyId
-                ? { ...c, remainingQuota: Math.max(0, c.remainingQuota - 1) }
-                : c
-            ),
-          }));
-        } else if (type === 'quota' && card && card.remainingQuota === 0) {
-          type = 'self-pay';
-          amount = card.selfPayPrice;
-        }
-
-        const newConsumption: Consumption = {
-          id: `cons-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          babyId,
-          type,
-          amount,
-          time: new Date().toISOString().replace('T', ' ').slice(0, 16),
-          operator,
-          remark: type === 'quota' ? '次卡扣费' : '自费消费',
-        };
-
-        set((state) => ({
-          consumptions: [newConsumption, ...state.consumptions],
-        }));
-      },
-
       addWaterRecord: (record) => {
         const newRecord: WaterRecord = {
           ...record,
@@ -319,63 +362,214 @@ export const useAppStore = create<AppState>()(
             state.cycleRules.find((r) => r.id === id) || state.currentCycleRule,
         })),
 
-      generateCycleAppointments: (startDate, endDate, cycleRuleId) => {
-        const { babies, appointments } = get();
-        const newAppointments: Appointment[] = [];
-        const cycleRule = get().cycleRules.find((r) => r.id === cycleRuleId);
+      checkCapacityConflict: (poolId, date, startTime, endTime, excludeAppointmentId) => {
+        const state = get();
+        const pool = state.pools.find((p) => p.id === poolId);
+        const capacity = pool?.capacity || 0;
 
-        if (!cycleRule) return 0;
-
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        const existingIds = new Set(
-          appointments.map((a) => `${a.babyId}-${a.date}-${a.startTime}`)
+        const existing = state.appointments.filter(
+          (a) =>
+            a.poolId === poolId &&
+            a.date === date &&
+            a.startTime === startTime &&
+            a.endTime === endTime &&
+            a.status !== 'cancelled' &&
+            a.id !== excludeAppointmentId
         );
+
+        const conflictingBabies = existing.map((a) => {
+          const baby = state.babies.find((b) => b.id === a.babyId);
+          return { babyId: a.babyId, babyName: baby?.name || '未知' };
+        });
+
+        return {
+          conflict: existing.length >= capacity,
+          currentCount: existing.length,
+          capacity,
+          conflictingBabies,
+          remainSlots: Math.max(0, capacity - existing.length),
+        };
+      },
+
+      previewCycleAppointments: (startDate, endDate, cycleRuleId) => {
+        const { babies, appointments, pools, cycleRules } = get();
+        const cycleRule = cycleRules.find((r) => r.id === cycleRuleId);
+        if (!cycleRule) return { total: 0, added: 0, skipped: 0, conflicts: 0, previews: [] };
+
+        const start = new Date(startDate + 'T00:00:00');
+        const end = new Date(endDate + 'T23:59:59');
+        const existingIds = new Set(
+          appointments
+            .filter((a) => a.status !== 'cancelled')
+            .map((a) => `${a.babyId}-${a.date}-${a.startTime}-${a.endTime}`)
+        );
+
+        const previews: PreviewAppointment[] = [];
+        let added = 0;
+        let skipped = 0;
+        let conflictCount = 0;
+
+        const generateDatesForSchedule = (schedule: Baby['fixedSchedule'][number]): Date[] => {
+          const dates: Date[] = [];
+
+          if (cycleRule.cycleType === 'weekly') {
+            const current = new Date(start);
+            while (current <= end) {
+              const dayDiff = schedule.dayOfWeek - current.getDay();
+              const target = new Date(current);
+              target.setDate(target.getDate() + dayDiff);
+              if (target >= start && target <= end) {
+                dates.push(new Date(target));
+              }
+              current.setDate(current.getDate() + 7);
+            }
+          } else {
+            let currentMonth = start.getMonth();
+            let currentYear = start.getFullYear();
+            while (new Date(currentYear, currentMonth, 1) <= end) {
+              const dayOfMonth = cycleRule.startDay;
+              const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+              const actualDay = Math.min(dayOfMonth, daysInMonth);
+              const target = new Date(currentYear, currentMonth, actualDay);
+
+              const scheduleDay = schedule.dayOfWeek;
+              let offset = scheduleDay - target.getDay();
+              if (offset < 0) offset += 7;
+              const scheduleDate = new Date(target);
+              scheduleDate.setDate(scheduleDate.getDate() + offset);
+
+              if (scheduleDate >= start && scheduleDate <= end) {
+                dates.push(new Date(scheduleDate));
+              }
+
+              currentMonth++;
+              if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+              }
+            }
+          }
+
+          return dates;
+        };
 
         babies.forEach((baby) => {
           baby.fixedSchedule?.forEach((schedule) => {
-            const current = new Date(start);
+            const dates = generateDatesForSchedule(schedule);
+            const pool = pools.find((p) => p.id === schedule.poolId);
 
-            while (current <= end) {
-              const dayDiff = schedule.dayOfWeek - current.getDay();
-              const targetDate = new Date(current);
-              targetDate.setDate(targetDate.getDate() + dayDiff);
+            dates.forEach((date) => {
+              const dateStr = date.toISOString().split('T')[0];
+              const uniqueKey = `${baby.id}-${dateStr}-${schedule.startTime}-${schedule.endTime}`;
 
-              if (targetDate >= start && targetDate <= end) {
-                const dateStr = targetDate.toISOString().split('T')[0];
-                const uniqueKey = `${baby.id}-${dateStr}-${schedule.startTime}`;
-
-                if (!existingIds.has(uniqueKey)) {
-                  existingIds.add(uniqueKey);
-                  newAppointments.push({
-                    id: `apt-cycle-${Date.now()}-${baby.id}-${dateStr}-${Math.random().toString(36).slice(2, 5)}`,
-                    babyId: baby.id,
-                    poolId: schedule.poolId,
-                    date: dateStr,
-                    startTime: schedule.startTime,
-                    endTime: schedule.endTime,
-                    status: 'scheduled',
-                    cycleRuleId,
-                    isFromCycle: true,
-                  });
-                }
+              if (existingIds.has(uniqueKey)) {
+                skipped++;
+                previews.push({
+                  babyId: baby.id,
+                  poolId: schedule.poolId,
+                  date: dateStr,
+                  startTime: schedule.startTime,
+                  endTime: schedule.endTime,
+                  babyName: baby.name,
+                  poolName: pool?.name || '未知泳池',
+                  reason: 'duplicate',
+                });
+                return;
               }
 
-              if (cycleRule.cycleType === 'weekly') {
-                current.setDate(current.getDate() + 7);
-              } else {
-                current.setMonth(current.getMonth() + 1);
+              const existingSameSlot = appointments.filter(
+                (a) =>
+                  a.poolId === schedule.poolId &&
+                  a.date === dateStr &&
+                  a.startTime === schedule.startTime &&
+                  a.endTime === schedule.endTime &&
+                  a.status !== 'cancelled'
+              );
+
+              const poolCapacity = pool?.capacity || 0;
+              if (poolCapacity > 0 && existingSameSlot.length >= poolCapacity) {
+                conflictCount++;
+                previews.push({
+                  babyId: baby.id,
+                  poolId: schedule.poolId,
+                  date: dateStr,
+                  startTime: schedule.startTime,
+                  endTime: schedule.endTime,
+                  babyName: baby.name,
+                  poolName: pool?.name || '未知泳池',
+                  reason: 'conflict',
+                  conflictCount: existingSameSlot.length,
+                  poolCapacity,
+                });
+                return;
               }
-            }
+
+              added++;
+              previews.push({
+                babyId: baby.id,
+                poolId: schedule.poolId,
+                date: dateStr,
+                startTime: schedule.startTime,
+                endTime: schedule.endTime,
+                babyName: baby.name,
+                poolName: pool?.name || '未知泳池',
+                reason: 'new',
+              });
+            });
           });
         });
 
+        const result: GenerationResult = {
+          total: previews.length,
+          added,
+          skipped,
+          conflicts: conflictCount,
+          previews,
+        };
+
+        set({ previewAppointments: previews });
+        return result;
+      },
+
+      confirmPreviewAppointments: (cycleRuleId) => {
+        const state = get();
+        const newAppointments: Appointment[] = [];
+        const existingIds = new Set(
+          state.appointments
+            .filter((a) => a.status !== 'cancelled')
+            .map((a) => `${a.babyId}-${a.date}-${a.startTime}-${a.endTime}`)
+        );
+
+        state.previewAppointments
+          .filter((p) => p.reason === 'new')
+          .forEach((preview) => {
+            const uniqueKey = `${preview.babyId}-${preview.date}-${preview.startTime}-${preview.endTime}`;
+            if (existingIds.has(uniqueKey)) return;
+
+            const newApt: Appointment = {
+              id: `apt-cycle-${Date.now()}-${preview.babyId}-${preview.date}-${Math.random().toString(36).slice(2, 5)}`,
+              babyId: preview.babyId,
+              poolId: preview.poolId,
+              date: preview.date,
+              startTime: preview.startTime,
+              endTime: preview.endTime,
+              status: 'scheduled',
+              cycleRuleId,
+              isFromCycle: true,
+            };
+            newAppointments.push(newApt);
+            existingIds.add(uniqueKey);
+          });
+
         set((state) => ({
           appointments: [...state.appointments, ...newAppointments],
+          previewAppointments: [],
         }));
 
         return newAppointments.length;
       },
+
+      clearPreview: () => set({ previewAppointments: [] }),
     }),
     {
       name: 'baby-swim-store',

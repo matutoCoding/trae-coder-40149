@@ -1,7 +1,7 @@
 
 import { useState } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { Receipt, Thermometer, Search, Filter, Download, Plus, CheckCircle2, Waves } from 'lucide-react';
+import { Receipt, Thermometer, Search, Download, Plus, CheckCircle2, Waves, Link2, CreditCard } from 'lucide-react';
 import { format } from 'date-fns';
 import Modal from '@/components/Modal';
 
@@ -9,8 +9,10 @@ export default function Consumption() {
   const {
     consumptions,
     babies,
-    waterRecords,
+    appointments,
+    memberCards,
     pools,
+    waterRecords,
     addWaterRecord,
   } = useAppStore();
 
@@ -39,13 +41,15 @@ export default function Consumption() {
     return filterPool === 'all' || r.poolId === filterPool;
   });
 
-  const totalAmount = consumptions.reduce((sum, c) => sum + c.amount, 0);
   const quotaCount = consumptions.filter((c) => c.type === 'quota').length;
   const selfPayCount = consumptions.filter((c) => c.type === 'self-pay').length;
   const selfPayAmount = consumptions.filter((c) => c.type === 'self-pay').reduce((sum, c) => sum + c.amount, 0);
+  const linkedCount = consumptions.filter((c) => c.appointmentId).length;
 
   const getBabyById = (babyId: string) => babies.find((b) => b.id === babyId);
   const getPoolById = (poolId: string) => pools.find((p) => p.id === poolId);
+  const getAppointmentById = (aptId: string) => appointments.find((a) => a.id === aptId);
+  const getCardById = (cardId: string) => memberCards.find((c) => c.id === cardId);
 
   const handleAddWaterRecord = () => {
     if (!waterForm.poolId) return;
@@ -72,7 +76,7 @@ export default function Consumption() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <div className="card animate-slide-up">
           <p className="text-sm text-gray-500">总消费笔数</p>
           <p className="text-2xl font-bold text-gray-800 mt-2">{consumptions.length}</p>
@@ -88,6 +92,10 @@ export default function Consumption() {
         <div className="card animate-slide-up animation-delay-300">
           <p className="text-sm text-gray-500">自费收入</p>
           <p className="text-2xl font-bold text-success-600 mt-2">¥{selfPayAmount}</p>
+        </div>
+        <div className="card animate-slide-up animation-delay-400">
+          <p className="text-sm text-gray-500">预约关联</p>
+          <p className="text-2xl font-bold text-secondary-500 mt-2">{linkedCount} 条</p>
         </div>
       </div>
 
@@ -156,6 +164,8 @@ export default function Consumption() {
                     <th className="pb-3 font-medium">宝宝</th>
                     <th className="pb-3 font-medium">消费类型</th>
                     <th className="pb-3 font-medium">金额</th>
+                    <th className="pb-3 font-medium">关联预约</th>
+                    <th className="pb-3 font-medium">使用次卡</th>
                     <th className="pb-3 font-medium">操作员</th>
                     <th className="pb-3 font-medium">备注</th>
                   </tr>
@@ -163,6 +173,10 @@ export default function Consumption() {
                 <tbody>
                   {filteredConsumptions.slice(0, 30).map((item) => {
                     const baby = getBabyById(item.babyId);
+                    const appointment = item.appointmentId ? getAppointmentById(item.appointmentId) : null;
+                    const appointmentPool = appointment ? getPoolById(appointment.poolId) : null;
+                    const card = item.cardId ? getCardById(item.cardId) : null;
+
                     return (
                       <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                         <td className="py-4 text-sm text-gray-600">{item.time}</td>
@@ -196,8 +210,31 @@ export default function Consumption() {
                             {item.type === 'quota' ? '扣次' : `¥${item.amount}`}
                           </span>
                         </td>
+                        <td className="py-4">
+                          {appointment ? (
+                            <div className="flex items-center gap-1.5">
+                              <Link2 className="w-3.5 h-3.5 text-primary-400" />
+                              <div className="text-xs">
+                                <p className="text-gray-700 font-medium">{appointment.date}</p>
+                                <p className="text-gray-500">{appointment.startTime}-{appointment.endTime} · {appointmentPool?.name}</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-4">
+                          {card ? (
+                            <div className="flex items-center gap-1.5">
+                              <CreditCard className="w-3.5 h-3.5 text-accent-400" />
+                              <span className="text-xs text-gray-600">{card.cardType}</span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">-</span>
+                          )}
+                        </td>
                         <td className="py-4 text-sm text-gray-600">{item.operator}</td>
-                        <td className="py-4 text-sm text-gray-500">{item.remark}</td>
+                        <td className="py-4 text-sm text-gray-500 max-w-[200px] truncate" title={item.remark}>{item.remark}</td>
                       </tr>
                     );
                   })}

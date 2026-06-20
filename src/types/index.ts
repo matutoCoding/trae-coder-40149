@@ -36,6 +36,7 @@ export interface Appointment {
   status: 'scheduled' | 'completed' | 'cancelled' | 'no-show';
   cycleRuleId?: string;
   isFromCycle: boolean;
+  consumptionId?: string;
 }
 
 export interface MemberCard {
@@ -55,6 +56,7 @@ export interface Consumption {
   id: string;
   babyId: string;
   appointmentId?: string;
+  cardId?: string;
   type: 'quota' | 'self-pay' | 'other';
   amount: number;
   time: string;
@@ -78,4 +80,25 @@ export interface CycleRule {
   cycleType: 'weekly' | 'monthly';
   startDay: number;
   isDefault: boolean;
+}
+
+export interface PreviewAppointment {
+  babyId: string;
+  poolId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  babyName: string;
+  poolName: string;
+  reason: 'new' | 'duplicate' | 'conflict';
+  conflictCount?: number;
+  poolCapacity?: number;
+}
+
+export interface GenerationResult {
+  total: number;
+  added: number;
+  skipped: number;
+  conflicts: number;
+  previews: PreviewAppointment[];
 }

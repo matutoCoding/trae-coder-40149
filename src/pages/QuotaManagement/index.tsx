@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { CreditCard, Plus, RefreshCw, AlertTriangle, Check, ArrowRight, CheckCircle2, X, Info } from 'lucide-react';
+import { CreditCard, Plus, RefreshCw, AlertTriangle, Check, ArrowRight, CheckCircle2, X, Info, Calendar, Waves, Clock, MapPin } from 'lucide-react';
 import type { MemberCard } from '@/types';
 import Modal from '@/components/Modal';
 import { format, addYears } from 'date-fns';
@@ -10,12 +10,15 @@ export default function QuotaManagement() {
   const {
     babies,
     memberCards,
+    appointments,
+    pools,
     resetQuota,
     resetAllQuotas,
-    consumeQuota,
     addMemberCard,
     checkAndResetCycleQuotas,
     lastAutoResetDate,
+    completeAppointment,
+    consumptions,
   } = useAppStore();
 
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
@@ -42,6 +45,7 @@ export default function QuotaManagement() {
   }, []);
 
   const getBabyById = (babyId: string) => babies.find((b) => b.id === babyId);
+  const getPoolById = (poolId: string) => pools.find((p) => p.id === poolId);
 
   const babiesWithoutCard = babies.filter(
     (b) => !memberCards.some((c) => c.babyId === b.id)
@@ -64,20 +68,6 @@ export default function QuotaManagement() {
     }
   };
 
-  const handleSelfPay = (babyId: string) => {
-    const card = memberCards.find((c) => c.babyId === babyId);
-    if (card) {
-      consumeQuota(babyId, 'self-pay', card.selfPayPrice, '前台');
-    }
-  };
-
-  const handleConsumeQuota = (babyId: string) => {
-    const card = memberCards.find((c) => c.babyId === babyId);
-    if (card) {
-      consumeQuota(babyId, 'quota', 0, '前台');
-    }
-  };
-
   const handleAddCard = () => {
     if (!cardForm.babyId || !cardForm.cardType.trim()) return;
     addMemberCard({
@@ -97,12 +87,34 @@ export default function QuotaManagement() {
     });
   };
 
+  const handleCompleteAppointment = (appointmentId: string) => {
+    completeAppointment(appointmentId, '前台');
+  };
+
+  const scheduledAppointments = appointments.filter(
+    (a) => a.status === 'scheduled'
+  );
+
   const totalQuota = memberCards.reduce((sum, c) => sum + c.totalQuota, 0);
   const usedQuota = memberCards.reduce((sum, c) => sum + (c.totalQuota - c.remainingQuota), 0);
   const zeroQuotaCount = memberCards.filter((c) => c.remainingQuota === 0).length;
 
   const selectedCardData = memberCards.find((c) => c.id === selectedCard);
   const selectedBaby = selectedCardData ? getBabyById(selectedCardData.babyId) : null;
+
+  const selectedBabyScheduledAppointments = selectedCardData
+    ? appointments.filter(
+        (a) => a.babyId === selectedCardData.babyId && a.status === 'scheduled'
+      )
+    : [];
+
+  const selectedBabyLinkedConsumptions = selectedCardData
+    ? consumptions.filter(
+        (c) =>
+          c.babyId === selectedCardData.babyId &&
+          c.appointmentId
+      )
+    : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -121,7 +133,7 @@ export default function QuotaManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">额度管控</h1>
-          <p className="text-gray-500 mt-1">管理会员次卡额度，周期重置与超额自费</p>
+          <p className="text-gray-500 mt-1">管理会员次卡额度，预约结算与周期重置</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -192,17 +204,99 @@ export default function QuotaManagement() {
         <div className="card animate-slide-up animation-delay-300">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-accent-400 to-accent-500 rounded-2xl flex items-center justify-center shadow-lg">
-              <ArrowRight className="w-6 h-6 text-white" />
+              <Calendar className="w-6 h-6 text-white" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">自费转化率</p>
-              <p className="text-2xl font-bold text-gray-800">
-                {memberCards.length > 0 ? Math.round((zeroQuotaCount / memberCards.length) * 100) : 0}%
-              </p>
+              <p className="text-sm text-gray-500">待结算预约</p>
+              <p className="text-2xl font-bold text-gray-800">{scheduledAppointments.length}</p>
             </div>
           </div>
         </div>
       </div>
+
+      {scheduledAppointments.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-primary-500" />
+              待结算预约
+            </h3>
+            <span className="badge bg-primary-100 text-primary-600">{scheduledAppointments.length} 个预约</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left text-sm text-gray-500 border-b border-gray-100">
+                  <th className="pb-3 font-medium">宝宝</th>
+                  <th className="pb-3 font-medium">日期</th>
+                  <th className="pb-3 font-medium">时段</th>
+                  <th className="pb-3 font-medium">泳池</th>
+                  <th className="pb-3 font-medium">卡状态</th>
+                  <th className="pb-3 font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scheduledAppointments.map((appt) => {
+                  const baby = getBabyById(appt.babyId);
+                  const pool = getPoolById(appt.poolId);
+                  const card = memberCards.find((c) => c.babyId === appt.babyId);
+                  return (
+                    <tr key={appt.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                      <td className="py-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center text-white font-medium text-sm"
+                            style={{ backgroundColor: baby?.avatarColor || '#ccc' }}
+                          >
+                            {baby?.name?.charAt(0)}
+                          </div>
+                          <div>
+                            <p className="font-medium text-gray-800">{baby?.name}</p>
+                            <p className="text-xs text-gray-500">{baby?.memberCardNo}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <p className="text-gray-800">{appt.date}</p>
+                      </td>
+                      <td className="py-3">
+                        <p className="text-gray-800">{appt.startTime} - {appt.endTime}</p>
+                      </td>
+                      <td className="py-3">
+                        <p className="text-gray-800">{pool?.name || '-'}</p>
+                      </td>
+                      <td className="py-3">
+                        {card ? (
+                          <span className={`badge ${
+                            card.remainingQuota === 0
+                              ? 'bg-danger-100 text-danger-600'
+                              : card.remainingQuota <= card.totalQuota * 0.3
+                                ? 'bg-warning-100 text-warning-600'
+                                : 'bg-success-100 text-success-600'
+                          }`}>
+                            余{card.remainingQuota}次
+                          </span>
+                        ) : (
+                          <span className="badge bg-gray-100 text-gray-600">无次卡</span>
+                        )}
+                      </td>
+                      <td className="py-3">
+                        <button
+                          onClick={() => handleCompleteAppointment(appt.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-success-100 text-success-700 hover:bg-success-200 transition-colors font-medium"
+                        >
+                          <Waves className="w-4 h-4" />
+                          完成游泳
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 card">
@@ -298,23 +392,6 @@ export default function QuotaManagement() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (card.remainingQuota > 0) {
-                                handleConsumeQuota(card.babyId);
-                              } else {
-                                handleSelfPay(card.babyId);
-                              }
-                            }}
-                            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                              card.remainingQuota > 0
-                                ? 'bg-primary-100 text-primary-600 hover:bg-primary-200'
-                                : 'bg-accent-100 text-accent-600 hover:bg-accent-200'
-                            }`}
-                          >
-                            {card.remainingQuota > 0 ? '卡扣费' : '自费'}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
                               resetQuota(card.babyId);
                             }}
                             className="px-3 py-1 text-sm bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
@@ -356,82 +433,155 @@ export default function QuotaManagement() {
 
         <div className="space-y-6">
           {selectedCardData && selectedBaby ? (
-            <div className="card animate-slide-up">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4">次卡详情</h3>
+            <>
+              <div className="card animate-slide-up">
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">次卡详情</h3>
 
-              <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-5 text-white mb-4">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm opacity-90">{selectedCardData.cardType}</span>
-                  <CreditCard className="w-6 h-6 opacity-80" />
+                <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-5 text-white mb-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-sm opacity-90">{selectedCardData.cardType}</span>
+                    <CreditCard className="w-6 h-6 opacity-80" />
+                  </div>
+                  <p className="text-2xl font-bold">{selectedBaby.memberCardNo}</p>
+                  <p className="text-sm opacity-80 mt-1">{selectedBaby.name} 的次卡</p>
                 </div>
-                <p className="text-2xl font-bold">{selectedBaby.memberCardNo}</p>
-                <p className="text-sm opacity-80 mt-1">{selectedBaby.name} 的次卡</p>
-              </div>
 
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">周期类型</span>
-                  <span className="font-medium text-gray-800">
-                    {selectedCardData.cycleType === 'weekly' ? '每周' : '每月'}
-                  </span>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">周期类型</span>
+                    <span className="font-medium text-gray-800">
+                      {selectedCardData.cycleType === 'weekly' ? '每周' : '每月'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">周期总额度</span>
+                    <span className="font-medium text-gray-800">{selectedCardData.totalQuota} 次</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">剩余额度</span>
+                    <span className={`font-bold text-lg ${
+                      selectedCardData.remainingQuota === 0 ? 'text-danger-600' :
+                      selectedCardData.remainingQuota <= selectedCardData.totalQuota * 0.3 ? 'text-warning-600' :
+                      'text-primary-600'
+                    }`}>
+                      {selectedCardData.remainingQuota} 次
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">自费单价</span>
+                    <span className="font-medium text-gray-800">¥{selectedCardData.selfPayPrice}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">有效期</span>
+                    <span className="font-medium text-gray-800 text-sm">
+                      {selectedCardData.effectiveDate} ~ {selectedCardData.expireDate}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">上次重置</span>
+                    <span className="font-medium text-gray-800">
+                      {selectedCardData.lastResetDate || '未重置'}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">周期总额度</span>
-                  <span className="font-medium text-gray-800">{selectedCardData.totalQuota} 次</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">剩余额度</span>
-                  <span className={`font-bold text-lg ${
-                    selectedCardData.remainingQuota === 0 ? 'text-danger-600' :
-                    selectedCardData.remainingQuota <= selectedCardData.totalQuota * 0.3 ? 'text-warning-600' :
-                    'text-primary-600'
-                  }`}>
-                    {selectedCardData.remainingQuota} 次
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">自费单价</span>
-                  <span className="font-medium text-gray-800">¥{selectedCardData.selfPayPrice}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">有效期</span>
-                  <span className="font-medium text-gray-800 text-sm">
-                    {selectedCardData.effectiveDate} ~ {selectedCardData.expireDate}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-500">上次重置</span>
-                  <span className="font-medium text-gray-800">
-                    {selectedCardData.lastResetDate || '未重置'}
-                  </span>
-                </div>
-              </div>
 
-              <div className="mt-6 pt-4 border-t border-gray-100 space-y-3">
-                <button
-                  onClick={() => resetQuota(selectedCardData.babyId)}
-                  className="w-full btn-secondary flex items-center justify-center gap-2"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  重置本周期额度
-                </button>
-                {selectedCardData.remainingQuota === 0 ? (
+                <div className="mt-6 pt-4 border-t border-gray-100">
                   <button
-                    onClick={() => handleSelfPay(selectedCardData.babyId)}
-                    className="w-full btn-primary flex items-center justify-center gap-2"
+                    onClick={() => resetQuota(selectedCardData.babyId)}
+                    className="w-full btn-secondary flex items-center justify-center gap-2"
                   >
-                    自费消费 ¥{selectedCardData.selfPayPrice}（生成明细）
+                    <RefreshCw className="w-4 h-4" />
+                    重置本周期额度
                   </button>
-                ) : (
-                  <button
-                    onClick={() => handleConsumeQuota(selectedCardData.babyId)}
-                    className="w-full btn-primary flex items-center justify-center gap-2"
-                  >
-                    扣次消费
-                  </button>
-                )}
+                </div>
               </div>
-            </div>
+
+              {selectedBabyScheduledAppointments.length > 0 && (
+                <div className="card animate-slide-up">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-primary-500" />
+                    待结算预约
+                  </h3>
+                  <div className="space-y-3">
+                    {selectedBabyScheduledAppointments.map((appt) => {
+                      const pool = getPoolById(appt.poolId);
+                      return (
+                        <div
+                          key={appt.id}
+                          className="p-3 bg-primary-50/60 rounded-xl border border-primary-100"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="w-4 h-4 text-primary-500" />
+                              <span className="font-medium text-gray-800">{appt.date}</span>
+                            </div>
+                            <button
+                              onClick={() => handleCompleteAppointment(appt.id)}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-success-500 text-white hover:bg-success-600 transition-colors font-medium"
+                            >
+                              <Waves className="w-3.5 h-3.5" />
+                              完成游泳
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-4 text-sm text-gray-600">
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" />
+                              {appt.startTime} - {appt.endTime}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <MapPin className="w-3.5 h-3.5" />
+                              {pool?.name || '-'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {selectedBabyLinkedConsumptions.length > 0 && (
+                <div className="card animate-slide-up">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    <Waves className="w-5 h-5 text-success-500" />
+                    预约关联消费
+                  </h3>
+                  <div className="space-y-3">
+                    {selectedBabyLinkedConsumptions.map((cons) => {
+                      const linkedAppt = appointments.find((a) => a.id === cons.appointmentId);
+                      const pool = linkedAppt ? getPoolById(linkedAppt.poolId) : null;
+                      return (
+                        <div
+                          key={cons.id}
+                          className="p-3 bg-gray-50 rounded-xl border border-gray-100"
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`badge text-xs ${
+                              cons.type === 'quota'
+                                ? 'bg-success-100 text-success-600'
+                                : 'bg-accent-100 text-accent-600'
+                            }`}>
+                              {cons.type === 'quota' ? '次卡扣费' : '自费'}
+                            </span>
+                            <span className="text-xs text-gray-500">{cons.time}</span>
+                          </div>
+                          <div className="text-sm text-gray-700">
+                            <span>{linkedAppt?.date} {linkedAppt?.startTime}-{linkedAppt?.endTime}</span>
+                            {pool && <span className="text-gray-400 ml-2">· {pool.name}</span>}
+                          </div>
+                          {cons.type === 'self-pay' && (
+                            <p className="text-sm font-medium text-accent-600 mt-1">¥{cons.amount}</p>
+                          )}
+                          {cons.remark && (
+                            <p className="text-xs text-gray-400 mt-1">{cons.remark}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="card text-center py-12">
               <CreditCard className="w-12 h-12 mx-auto text-gray-300 mb-3" />
@@ -458,7 +608,7 @@ export default function QuotaManagement() {
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-primary-600 text-xs font-bold">3</span>
                 </div>
-                <p>额度用完后自动转为<strong>自费消费</strong>，按次卡自费单价计费并生成消费明细</p>
+                <p>点击"完成游泳"结算预约时，有额度则<strong>次卡扣费</strong>，无额度则<strong>自费消费</strong></p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
