@@ -55,6 +55,8 @@ export interface MemberCard {
   lastResetDate?: string;
 }
 
+export type ConsumptionAdjustType = 'original' | 'refund' | 'adjustment';
+
 export interface Consumption {
   id: string;
   babyId: string;
@@ -66,6 +68,8 @@ export interface Consumption {
   operator: string;
   remark?: string;
   isFromWaitlist?: boolean;
+  adjustType: ConsumptionAdjustType;
+  relatedConsumptionId?: string;
 }
 
 export interface WaterRecord {
@@ -97,6 +101,7 @@ export interface PreviewAppointment {
   reason: 'new' | 'duplicate' | 'conflict';
   conflictCount?: number;
   poolCapacity?: number;
+  selected: boolean;
 }
 
 export interface GenerationResult {
@@ -121,4 +126,13 @@ export interface OverlappingAppointment {
   babyName: string;
   startTime: string;
   endTime: string;
+}
+
+export interface RefundForm {
+  consumptionId: string;
+  refundType: 'full' | 're-settle';
+  newCardId?: string | null;
+  newPaymentType?: 'quota' | 'self-pay';
+  newSelfPayAmount?: number;
+  operator: string;
 }

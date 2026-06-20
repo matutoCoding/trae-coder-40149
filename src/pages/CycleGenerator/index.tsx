@@ -43,6 +43,11 @@ export default function CycleGenerator() {
     addBabyFixedSchedule,
     updateBabyFixedSchedule,
     removeBabyFixedSchedule,
+    togglePreviewSelected,
+    setAllPreviewSelected,
+    setPreviewSelectedByBaby,
+    setPreviewSelectedByPool,
+    confirmSelectedPreviewAppointments,
   } = useAppStore();
 
   const [selectedBaby, setSelectedBaby] = useState<string | null>(null);
@@ -54,6 +59,8 @@ export default function CycleGenerator() {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [reasonFilter, setReasonFilter] = useState<ReasonFilter>('all');
   const [confirmResult, setConfirmResult] = useState<number | null>(null);
+  const [groupBy, setGroupBy] = useState<'date' | 'baby' | 'pool'>('date');
+  const [confirmSelectedResult, setConfirmSelectedResult] = useState<{ confirmed: number; remaining: number } | null>(null);
   const [hoveredConflict, setHoveredConflict] = useState<string | null>(null);
 
   const [showCycleRuleModal, setShowCycleRuleModal] = useState(false);
@@ -121,6 +128,51 @@ export default function CycleGenerator() {
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   }, [filteredPreviews]);
 
+  const groupedByBabyPreviews = useMemo(() => {
+    const groups: Record<string, PreviewAppointment[]> = {};
+    filteredPreviews.forEach((p) => {
+      const key = p.babyId;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(p);
+    });
+    return Object.entries(groups).sort(([, a], [, b]) =>
+      a[0].babyName.localeCompare(b[0].babyName, 'zh-CN')
+    );
+  }, [filteredPreviews]);
+
+  const groupedByPoolPreviews = useMemo(() => {
+    const groups: Record<string, PreviewAppointment[]> = {};
+    filteredPreviews.forEach((p) => {
+      if (!groups[p.poolId]) groups[p.poolId] = [];
+      groups[p.poolId].push(p);
+    });
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [filteredPreviews]);
+
+  const currentGroupedPreviews = useMemo(() => {
+    if (groupBy === 'date') {
+      return groupedByDatePreviews.map(([key, items]) => ({
+        key,
+        title: formatPreviewDate(key),
+        items,
+      }));
+    }
+    if (groupBy === 'baby') {
+      return groupedByBabyPreviews.map(([key, items]) => ({
+        key,
+        title: items[0].babyName,
+        items,
+      }));
+    }
+    return groupedByPoolPreviews.map(([key, items]) => ({
+      key,
+      title: items[0].poolName,
+      items,
+    }));
+  }, [groupBy, groupedByDatePreviews, groupedByBabyPreviews, groupedByPoolPreviews]);
+
+  const selectedCount = previewAppointments.filter((p) => p.selected && p.reason === 'new').length;
+
   const getRuleIndicatorText = (rule: CycleRule) => {
     if (rule.cycleType === 'weekly') {
       return `当前规则：周周期，每周${WEEKDAYS[rule.startDay]}开始`;
@@ -146,6 +198,18 @@ export default function CycleGenerator() {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const count = confirmPreviewAppointments(currentCycleRule.id);
     setConfirmResult(count);
+    setIsConfirming(false);
+  };
+
+  const handleConfirmSelected = async () => {
+    if (!currentCycleRule) return;
+    setIsConfirming(true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const selectedKeys = previewAppointments
+      .filter((p) => p.selected && p.reason === 'new')
+      .map((p) => `${p.babyId}-${p.date}-${p.startTime}-${p.endTime}`);
+    const result = confirmSelectedPreviewAppointments(currentCycleRule.id, selectedKeys);
+    setConfirmSelectedResult(result);
     setIsConfirming(false);
   };
 
@@ -677,25 +741,6 @@ export default function CycleGenerator() {
         onClose={handleClosePreviewModal}
         title="预览生成结果"
         size="xl"
-        footer={
-          <>
-            <button onClick={handleClosePreviewModal} className="btn-secondary">
-              取消
-            </button>
-            <button
-              onClick={handleConfirm}
-              disabled={isConfirming || !generationResult || generationResult.added === 0}
-              className="btn-primary flex items-center gap-2 disabled:opacity-50"
-            >
-              {isConfirming ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Check className="w-4 h-4" />
-              )}
-              {isConfirming ? '写入中...' : `确认写入 (${generationResult?.added || 0} 条)`}
-            </button>
-          </>
-        }
       >
         {generationResult && (
           <div className="space-y-4">
@@ -723,77 +768,176 @@ export default function CycleGenerator() {
               </div>
             </div>
 
-            {confirmResult !== null && (
-              <div className={`p-3 rounded-xl text-center text-sm ${
-                confirmResult > 0
-                  ? 'bg-success-50 text-success-600 border border-success-200'
-                  : 'bg-warning-50 text-warning-600 border border-warning-200'
-              }`}>
-                {confirmResult > 0
-                  ? `✓ 已成功写入 ${confirmResult} 条新预约`
-                  : 'ℹ 未写入新预约'}
+            {confirmSelectedResult && (
+              <div className="p-3 rounded-xl text-center text-sm bg-success-50 text-success-600 border border-success-200">
+                ✓ 已确认写入 {confirmSelectedResult.confirmed} 条，剩余 {confirmSelectedResult.remaining} 条待处理
               </div>
             )}
 
-            <div className="flex items-center gap-2 pt-2">
-              <Filter className="w-4 h-4 text-gray-500" />
-              <span className="text-sm text-gray-600">筛选：</span>
-              {(['all', 'new', 'duplicate', 'conflict'] as ReasonFilter[]).map((filter) => (
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
+                {(['date', 'baby', 'pool'] as const).map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setGroupBy(g)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      groupBy === g
+                        ? 'bg-white text-primary-600 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-800'
+                    }`}
+                  >
+                    {g === 'date' ? '按日期' : g === 'baby' ? '按宝宝' : '按泳池'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="h-6 w-px bg-gray-200" />
+
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-gray-500" />
+                {(['all', 'new', 'duplicate', 'conflict'] as ReasonFilter[]).map((filter) => (
+                  <button
+                    key={filter}
+                    onClick={() => setReasonFilter(filter)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      reasonFilter === filter
+                        ? 'bg-primary-500 text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {filter === 'all' ? '全部' : REASON_LABELS[filter]}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1" />
+
+              <div className="flex items-center gap-2">
                 <button
-                  key={filter}
-                  onClick={() => setReasonFilter(filter)}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
-                    reasonFilter === filter
-                      ? 'bg-primary-500 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
+                  onClick={() => setAllPreviewSelected(true, 'new')}
+                  className="text-xs text-primary-600 hover:text-primary-700"
                 >
-                  {filter === 'all' ? '全部' : REASON_LABELS[filter]}
+                  全选新增
                 </button>
-              ))}
+                <span className="text-gray-300">|</span>
+                <button
+                  onClick={() => setAllPreviewSelected(false)}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  取消全选
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
-              {groupedByDatePreviews.map(([date, items]) => (
-                <div key={date} className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="flex flex-wrap gap-2 pt-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-gray-500">按宝宝：</span>
+                <select
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setPreviewSelectedByBaby(e.target.value, true);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="text-xs px-2 py-1 border border-gray-200 rounded-lg"
+                  value=""
+                >
+                  <option value="">选择宝宝全选</option>
+                  {babies.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-gray-500">按泳池：</span>
+                <select
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setPreviewSelectedByPool(e.target.value, true);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="text-xs px-2 py-1 border border-gray-200 rounded-lg"
+                  value=""
+                >
+                  <option value="">选择泳池全选</option>
+                  {pools.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-4 max-h-[45vh] overflow-y-auto pr-2">
+              {currentGroupedPreviews.map((group) => (
+                <div key={group.key} className="border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 sticky top-0">
                     <div className="flex items-center justify-between">
                       <h4 className="font-medium text-gray-800">
-                        {formatPreviewDate(date)}
+                        {group.title}
                       </h4>
                       <span className="text-xs text-gray-500">
-                        {items.length} 条记录
+                        {group.items.length} 条记录
                       </span>
                     </div>
                   </div>
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-gray-50/50">
-                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">宝宝</th>
-                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">泳池</th>
-                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">时段</th>
-                        <th className="text-center px-4 py-2.5 text-gray-600 font-medium text-xs">状态</th>
+                        <th className="text-left px-3 py-2 text-gray-600 font-medium text-xs w-10">
+                          <input
+                            type="checkbox"
+                            checked={group.items.every((item) => item.selected || item.reason !== 'new')}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              group.items.forEach((item) => {
+                                if (item.reason === 'new') {
+                                  const idx = previewAppointments.indexOf(item);
+                                  if (idx !== -1 && item.selected !== checked) {
+                                    togglePreviewSelected(idx);
+                                  }
+                                }
+                              });
+                            }}
+                            className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-200"
+                          />
+                        </th>
+                        <th className="text-left px-2 py-2 text-gray-600 font-medium text-xs">宝宝</th>
+                        <th className="text-left px-2 py-2 text-gray-600 font-medium text-xs">泳池</th>
+                        <th className="text-left px-2 py-2 text-gray-600 font-medium text-xs">时段</th>
+                        {groupBy !== 'date' && (
+                          <th className="text-left px-2 py-2 text-gray-600 font-medium text-xs">日期</th>
+                        )}
+                        <th className="text-center px-2 py-2 text-gray-600 font-medium text-xs">状态</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {items.map((item, idx) => {
+                      {group.items.map((item, idx) => {
                         const baby = babies.find((b) => b.id === item.babyId);
                         const pool = pools.find((p) => p.id === item.poolId);
-                        const itemKey = `${item.babyId}-${item.poolId}-${item.date}-${item.startTime}-${item.endTime}-${idx}`;
+                        const globalIdx = previewAppointments.indexOf(item);
                         const isConflict = item.reason === 'conflict';
-                        const offsetInfo = currentCycleRule && currentCycleRule.cycleType === 'monthly'
-                          ? getMonthlyOffsetInfo(parseISO(item.date), currentCycleRule)
-                          : null;
+                        const isDuplicate = item.reason === 'duplicate';
+                        const canSelect = item.reason === 'new';
                         return (
                           <tr
-                            key={itemKey}
+                            key={`${item.babyId}-${item.date}-${item.startTime}-${item.endTime}-${idx}`}
                             className={`border-t border-gray-100 transition-colors ${
-                              isConflict ? 'bg-red-50/80 hover:bg-red-50' : 'hover:bg-gray-50/50'
+                              isConflict ? 'bg-red-50/80 hover:bg-red-50' :
+                              isDuplicate ? 'bg-yellow-50/50 hover:bg-yellow-50' :
+                              item.selected ? 'bg-primary-50/50 hover:bg-primary-50' : 'hover:bg-gray-50/50'
                             }`}
-                            onMouseEnter={() => isConflict && setHoveredConflict(itemKey)}
-                            onMouseLeave={() => setHoveredConflict(null)}
                           >
-                            <td className="px-4 py-3 font-medium text-gray-800">
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="checkbox"
+                                checked={item.selected}
+                                onChange={() => canSelect && togglePreviewSelected(globalIdx)}
+                                disabled={!canSelect}
+                                className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-200 disabled:opacity-40"
+                              />
+                            </td>
+                            <td className="px-2 py-2.5 font-medium text-gray-800">
                               <div className="flex items-center gap-2">
                                 <div
                                   className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
@@ -804,23 +948,19 @@ export default function CycleGenerator() {
                                 {item.babyName}
                               </div>
                             </td>
-                            <td className="px-4 py-3 text-gray-600">
+                            <td className="px-2 py-2.5 text-gray-600">
                               <div className="flex items-center gap-1.5">
                                 <Waves className="w-3.5 h-3.5 text-primary-400" />
                                 {pool?.name || item.poolName}
                               </div>
                             </td>
-                            <td className="px-4 py-3 text-gray-600">
-                              <div className="flex items-center gap-2">
-                                <span>{item.startTime} - {item.endTime}</span>
-                                {offsetInfo && (
-                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-primary-100 text-primary-700 rounded text-[10px]">
-                                    月{offsetInfo.monthDay}→周{offsetInfo.weekday.replace('周', '')}
-                                  </span>
-                                )}
-                              </div>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {item.startTime} - {item.endTime}
                             </td>
-                            <td className="px-4 py-3 text-center relative">
+                            {groupBy !== 'date' && (
+                              <td className="px-2 py-2.5 text-gray-600">{item.date}</td>
+                            )}
+                            <td className="px-2 py-2.5 text-center">
                               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${REASON_COLORS[item.reason]}`}>
                                 {item.reason === 'conflict' && <AlertTriangle className="w-3 h-3" />}
                                 {item.reason === 'duplicate' && <RefreshCw className="w-3 h-3" />}
@@ -828,17 +968,9 @@ export default function CycleGenerator() {
                                 {REASON_LABELS[item.reason]}
                               </span>
                               {isConflict && (
-                                <>
-                                  <span className="text-xs text-red-500 ml-1">
-                                    ({item.conflictCount}/{item.poolCapacity})
-                                  </span>
-                                  {hoveredConflict === itemKey && (
-                                    <div className="absolute right-0 top-full mt-1 px-3 py-2 bg-gray-800 text-white text-xs rounded-lg whitespace-nowrap z-20">
-                                      {getConflictTooltip(item)}
-                                      <div className="absolute bottom-full right-4 border-4 border-transparent border-b-gray-800" />
-                                    </div>
-                                  )}
-                                </>
+                                <span className="text-xs text-red-500 ml-1">
+                                  ({item.conflictCount}/{item.poolCapacity})
+                                </span>
                               )}
                             </td>
                           </tr>
@@ -848,7 +980,7 @@ export default function CycleGenerator() {
                   </table>
                 </div>
               ))}
-              {groupedByDatePreviews.length === 0 && (
+              {currentGroupedPreviews.length === 0 && (
                 <div className="text-center py-10 text-gray-400">
                   <X className="w-8 h-8 mx-auto mb-2 opacity-30" />
                   <p>无匹配记录</p>
@@ -856,9 +988,37 @@ export default function CycleGenerator() {
               )}
             </div>
 
-            <div className="text-xs text-gray-400 text-right">
-              共 {filteredPreviews.length} 条记录
-              {reasonFilter !== 'all' && ` (已筛选，总计 ${previewAppointments.length} 条)`}
+            <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+              <div className="text-xs text-gray-500">
+                已选中 <span className="font-bold text-primary-600">{selectedCount}</span> 条新增记录
+                <span className="text-gray-300 mx-2">|</span>
+                共 {filteredPreviews.length} 条记录
+                {reasonFilter !== 'all' && ` (总计 ${previewAppointments.length} 条)`}
+              </div>
+              <div className="flex gap-3">
+                <button onClick={handleClosePreviewModal} className="btn-secondary">
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirmSelected}
+                  disabled={isConfirming || selectedCount === 0}
+                  className="btn-warning flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isConfirming ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Check className="w-4 h-4" />
+                  )}
+                  分批确认 ({selectedCount}条)
+                </button>
+                <button
+                  onClick={handleConfirm}
+                  disabled={isConfirming || !generationResult || generationResult.added === 0}
+                  className="btn-primary flex items-center gap-2 disabled:opacity-50"
+                >
+                  全部确认 ({generationResult?.added || 0}条)
+                </button>
+              </div>
             </div>
           </div>
         )}

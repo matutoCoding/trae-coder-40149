@@ -239,6 +239,7 @@ function generateConsumptions(): Consumption[] {
         time: `${dateStr} ${String(9 + Math.floor(Math.random() * 8)).padStart(2, '0')}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}`,
         operator: '张前台',
         remark: isQuota ? '次卡扣费' : '自费消费',
+        adjustType: 'original',
       });
     }
   }

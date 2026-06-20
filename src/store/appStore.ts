@@ -14,6 +14,8 @@ import type {
   GenerationResult,
   SettlementForm,
   OverlappingAppointment,
+  RefundForm,
+  ConsumptionAdjustType,
 } from '@/types';
 import {
   pools as initialPools,
@@ -73,6 +75,8 @@ interface AppState {
   deleteAppointment: (id: string) => void;
   cancelAppointment: (id: string) => { promoted: Appointment[] | null };
   settleAppointment: (form: SettlementForm) => { success: boolean; message: string };
+  refundConsumption: (form: { consumptionId: string; operator: string }) => { success: boolean; message: string };
+  reSettleConsumption: (form: RefundForm) => { success: boolean; message: string };
 
   addToWaitlist: (apt: Omit<Appointment, 'id' | 'isWaitlist' | 'waitlistPosition'>) => Appointment;
   removeFromWaitlist: (appointmentId: string) => void;
@@ -105,6 +109,11 @@ interface AppState {
 
   previewCycleAppointments: (startDate: string, endDate: string, cycleRuleId: string) => GenerationResult;
   confirmPreviewAppointments: (cycleRuleId: string) => number;
+  confirmSelectedPreviewAppointments: (cycleRuleId: string, selectedKeys: string[]) => { confirmed: number; remaining: number };
+  togglePreviewSelected: (index: number) => void;
+  setAllPreviewSelected: (selected: boolean, onlyReason?: 'new' | 'duplicate' | 'conflict') => void;
+  setPreviewSelectedByBaby: (babyId: string, selected: boolean) => void;
+  setPreviewSelectedByPool: (poolId: string, selected: boolean) => void;
   clearPreview: () => void;
 
   checkCapacityConflict: (
@@ -221,10 +230,32 @@ export const useAppStore = create<AppState>()(
         return newAppointment;
       },
 
-      updateAppointment: (id, updates) =>
-        set((state) => ({
-          appointments: state.appointments.map((a) => (a.id === id ? { ...a, ...updates } : a)),
-        })),
+      updateAppointment: (id, updates) => {
+        const state = get();
+        const oldApt = state.appointments.find((a) => a.id === id);
+        if (!oldApt) return;
+
+        const timeOrPoolChanged =
+          (updates.date !== undefined && updates.date !== oldApt.date) ||
+          (updates.startTime !== undefined && updates.startTime !== oldApt.startTime) ||
+          (updates.endTime !== undefined && updates.endTime !== oldApt.endTime) ||
+          (updates.poolId !== undefined && updates.poolId !== oldApt.poolId);
+
+        const wasFormal = !oldApt.isWaitlist && oldApt.status === 'scheduled';
+
+        set((s) => ({
+          appointments: s.appointments.map((a) => (a.id === id ? { ...a, ...updates } : a)),
+        }));
+
+        if (timeOrPoolChanged && wasFormal) {
+          get().tryPromoteFirstWaitlist(
+            oldApt.poolId,
+            oldApt.date,
+            oldApt.startTime,
+            oldApt.endTime
+          );
+        }
+      },
 
       deleteAppointment: (id) =>
         set((state) => ({
@@ -384,6 +415,7 @@ export const useAppStore = create<AppState>()(
           operator: form.operator,
           remark,
           isFromWaitlist: appointment.isWaitlist,
+          adjustType: 'original',
         };
 
         set((s) => {
@@ -415,6 +447,165 @@ export const useAppStore = create<AppState>()(
             consumptionType === 'quota'
               ? `结算成功：${baby?.name} 次卡扣费 -1`
               : `结算成功：${baby?.name} 自费 ¥${amount}`,
+        };
+      },
+
+      refundConsumption: ({ consumptionId, operator }) => {
+        const state = get();
+        const original = state.consumptions.find((c) => c.id === consumptionId);
+        if (!original) return { success: false, message: '消费记录不存在' };
+        if (original.adjustType === 'refund') return { success: false, message: '该记录已退款' };
+
+        const baby = state.babies.find((b) => b.id === original.babyId);
+        const refundConsumption: Consumption = {
+          id: `cons-refund-${Date.now()}`,
+          babyId: original.babyId,
+          appointmentId: original.appointmentId,
+          cardId: original.cardId,
+          type: original.type,
+          amount: -original.amount,
+          time: new Date().toISOString().replace('T', ' ').slice(0, 16),
+          operator,
+          remark: `退款 - ${original.type === 'quota' ? '次卡返还' : '自费退款'}`,
+          isFromWaitlist: original.isFromWaitlist,
+          adjustType: 'refund',
+          relatedConsumptionId: consumptionId,
+        };
+
+        set((s) => {
+          let newCards = s.memberCards;
+          if (original.type === 'quota' && original.cardId) {
+            newCards = s.memberCards.map((c) =>
+              c.id === original.cardId
+                ? { ...c, remainingQuota: Math.min(c.totalQuota, c.remainingQuota + 1) }
+                : c
+            );
+          }
+
+          let newAppointments = s.appointments;
+          if (original.appointmentId) {
+            newAppointments = s.appointments.map((a) =>
+              a.id === original.appointmentId
+                ? { ...a, status: 'scheduled' as const, consumptionId: undefined }
+                : a
+            );
+          }
+
+          return {
+            consumptions: [refundConsumption, ...s.consumptions],
+            memberCards: newCards,
+            appointments: newAppointments,
+          };
+        });
+
+        return {
+          success: true,
+          message: `退款成功：${baby?.name} ${original.type === 'quota' ? '次卡 +1' : `¥${original.amount} 已退还`}`,
+        };
+      },
+
+      reSettleConsumption: (form) => {
+        const state = get();
+        const original = state.consumptions.find((c) => c.id === form.consumptionId);
+        if (!original) return { success: false, message: '原始消费记录不存在' };
+        if (original.adjustType !== 'original') return { success: false, message: '只能调整原始消费记录' };
+
+        const appointment = original.appointmentId
+          ? state.appointments.find((a) => a.id === original.appointmentId)
+          : null;
+        if (!appointment) return { success: false, message: '关联预约不存在' };
+
+        const baby = state.babies.find((b) => b.id === original.babyId);
+
+        if (form.refundType === 're-settle' && form.newPaymentType === 'quota' && form.newCardId) {
+          const newCard = state.memberCards.find((c) => c.id === form.newCardId && c.babyId === original.babyId);
+          if (!newCard) return { success: false, message: '所选次卡无效' };
+          if (newCard.remainingQuota <= 0) return { success: false, message: '该次卡剩余额度不足' };
+        }
+
+        const refundConsumption: Consumption = {
+          id: `cons-refund-${Date.now()}`,
+          babyId: original.babyId,
+          appointmentId: original.appointmentId,
+          cardId: original.cardId,
+          type: original.type,
+          amount: -original.amount,
+          time: new Date().toISOString().replace('T', ' ').slice(0, 16),
+          operator: form.operator,
+          remark: `调整退款 - ${original.type === 'quota' ? '次卡返还' : '自费退款'}`,
+          isFromWaitlist: original.isFromWaitlist,
+          adjustType: 'refund',
+          relatedConsumptionId: form.consumptionId,
+        };
+
+        const newPaymentType = form.newPaymentType || 'self-pay';
+        let newCardId: string | undefined;
+        let newAmount = 0;
+        let newRemark = '';
+
+        if (newPaymentType === 'quota' && form.newCardId) {
+          newCardId = form.newCardId;
+          newAmount = 0;
+          const card = state.memberCards.find((c) => c.id === form.newCardId);
+          newRemark = `调整后次卡扣费 - ${card?.cardType || ''}`;
+        } else {
+          newAmount = form.newSelfPayAmount || original.amount || 88;
+          newRemark = `调整后自费消费 - ¥${newAmount}`;
+        }
+
+        const newConsumption: Consumption = {
+          id: `cons-adjust-${Date.now()}`,
+          babyId: original.babyId,
+          appointmentId: original.appointmentId,
+          cardId: newCardId,
+          type: newPaymentType,
+          amount: newAmount,
+          time: new Date().toISOString().replace('T', ' ').slice(0, 16),
+          operator: form.operator,
+          remark: newRemark,
+          isFromWaitlist: original.isFromWaitlist,
+          adjustType: 'adjustment',
+          relatedConsumptionId: form.consumptionId,
+        };
+
+        set((s) => {
+          let newCards = s.memberCards;
+
+          if (original.type === 'quota' && original.cardId) {
+            newCards = newCards.map((c) =>
+              c.id === original.cardId
+                ? { ...c, remainingQuota: Math.min(c.totalQuota, c.remainingQuota + 1) }
+                : c
+            );
+          }
+
+          if (newPaymentType === 'quota' && form.newCardId) {
+            newCards = newCards.map((c) =>
+              c.id === form.newCardId
+                ? { ...c, remainingQuota: Math.max(0, c.remainingQuota - 1) }
+                : c
+            );
+          }
+
+          let newAppointments = s.appointments;
+          if (original.appointmentId) {
+            newAppointments = s.appointments.map((a) =>
+              a.id === original.appointmentId
+                ? { ...a, memberCardId: newCardId, consumptionId: newConsumption.id }
+                : a
+            );
+          }
+
+          return {
+            consumptions: [newConsumption, refundConsumption, ...s.consumptions],
+            memberCards: newCards,
+            appointments: newAppointments,
+          };
+        });
+
+        return {
+          success: true,
+          message: `调整成功：${baby?.name} 已重新结算`,
         };
       },
 
@@ -616,7 +807,7 @@ export const useAppStore = create<AppState>()(
         let skipped = 0;
         let conflictCount = 0;
 
-        const pendingNewBySlot = new Map<string, number>();
+        const pendingNewByPoolDate = new Map<string, { startTime: string; endTime: string }[]>();
 
         const generateDatesForSchedule = (schedule: Baby['fixedSchedule'][number]): Date[] => {
           const dates: Date[] = [];
@@ -629,7 +820,8 @@ export const useAppStore = create<AppState>()(
             current.setDate(current.getDate() + diff);
 
             while (current <= end) {
-              const dayDiff = schedule.dayOfWeek - current.getDay();
+              let dayDiff = schedule.dayOfWeek - current.getDay();
+              if (dayDiff < 0) dayDiff += 7;
               const target = new Date(current);
               target.setDate(target.getDate() + dayDiff);
               if (target >= start && target <= end) {
@@ -678,6 +870,7 @@ export const useAppStore = create<AppState>()(
           reason: 'new' | 'duplicate' | 'conflict';
           conflictCount?: number;
           poolCapacity?: number;
+          selected: boolean;
         }[] = [];
 
         babies.forEach((baby) => {
@@ -700,6 +893,7 @@ export const useAppStore = create<AppState>()(
                   babyName: baby.name,
                   poolName: pool?.name || '未知泳池',
                   reason: 'duplicate',
+                  selected: false,
                 });
                 return;
               }
@@ -715,9 +909,13 @@ export const useAppStore = create<AppState>()(
                   isOverlapping(a.startTime, a.endTime, schedule.startTime, schedule.endTime)
               ).length;
 
-              const slotKey = `${schedule.poolId}-${dateStr}-${schedule.startTime}-${schedule.endTime}`;
-              const pendingCount = pendingNewBySlot.get(slotKey) || 0;
-              const totalIfAdded = currentOverlapping + pendingCount + 1;
+              const poolDateKey = `${schedule.poolId}-${dateStr}`;
+              const pendingList = pendingNewByPoolDate.get(poolDateKey) || [];
+              const pendingOverlappingCount = pendingList.filter((p) =>
+                isOverlapping(p.startTime, p.endTime, schedule.startTime, schedule.endTime)
+              ).length;
+
+              const totalIfAdded = currentOverlapping + pendingOverlappingCount + 1;
 
               if (poolCapacity > 0 && totalIfAdded > poolCapacity) {
                 conflictCount++;
@@ -730,8 +928,9 @@ export const useAppStore = create<AppState>()(
                   babyName: baby.name,
                   poolName: pool?.name || '未知泳池',
                   reason: 'conflict',
-                  conflictCount: currentOverlapping + pendingCount,
+                  conflictCount: currentOverlapping + pendingOverlappingCount,
                   poolCapacity,
+                  selected: false,
                 });
                 return;
               }
@@ -746,8 +945,9 @@ export const useAppStore = create<AppState>()(
                 babyName: baby.name,
                 poolName: pool?.name || '未知泳池',
                 reason: 'new',
+                selected: true,
               });
-              pendingNewBySlot.set(slotKey, pendingCount + 1);
+              pendingNewByPoolDate.set(poolDateKey, [...pendingList, { startTime: schedule.startTime, endTime: schedule.endTime }]);
             });
           });
         });
@@ -757,7 +957,12 @@ export const useAppStore = create<AppState>()(
           return a.babyName.localeCompare(b.babyName, 'zh');
         });
 
-        previews.push(...flatPreviews);
+        const previewsWithSelected: PreviewAppointment[] = flatPreviews.map((p) => ({
+          ...p,
+          selected: p.reason === 'new',
+        }));
+
+        previews.push(...previewsWithSelected);
 
         const result: GenerationResult = {
           total: previews.length,
@@ -840,6 +1045,113 @@ export const useAppStore = create<AppState>()(
         }));
 
         return newAppointments.filter((a) => !a.isWaitlist).length;
+      },
+
+      togglePreviewSelected: (index) =>
+        set((state) => ({
+          previewAppointments: state.previewAppointments.map((p, i) =>
+            i === index ? { ...p, selected: !p.selected } : p
+          ),
+        })),
+
+      setAllPreviewSelected: (selected, onlyReason) =>
+        set((state) => ({
+          previewAppointments: state.previewAppointments.map((p) =>
+            onlyReason ? (p.reason === onlyReason ? { ...p, selected } : p) : { ...p, selected }
+          ),
+        })),
+
+      setPreviewSelectedByBaby: (babyId, selected) =>
+        set((state) => ({
+          previewAppointments: state.previewAppointments.map((p) =>
+            p.babyId === babyId ? { ...p, selected } : p
+          ),
+        })),
+
+      setPreviewSelectedByPool: (poolId, selected) =>
+        set((state) => ({
+          previewAppointments: state.previewAppointments.map((p) =>
+            p.poolId === poolId ? { ...p, selected } : p
+          ),
+        })),
+
+      confirmSelectedPreviewAppointments: (cycleRuleId, selectedKeys) => {
+        const state = get();
+        const selectedPreviews = state.previewAppointments.filter((p) =>
+          selectedKeys.includes(`${p.babyId}-${p.date}-${p.startTime}-${p.endTime}`) &&
+          p.reason === 'new'
+        );
+        const unselectedPreviews = state.previewAppointments.filter(
+          (p) =>
+            !selectedKeys.includes(`${p.babyId}-${p.date}-${p.startTime}-${p.endTime}`)
+        );
+
+        const newAppointments: Appointment[] = [];
+        const existingIds = new Set(
+          state.appointments
+            .filter((a) => a.status !== 'cancelled')
+            .map((a) => `${a.babyId}-${a.date}-${a.startTime}-${a.endTime}`)
+        );
+
+        const sortedBySlot = new Map<string, typeof selectedPreviews>();
+        selectedPreviews.forEach((p) => {
+          const key = `${p.poolId}-${p.date}-${p.startTime}-${p.endTime}`;
+          if (!sortedBySlot.has(key)) sortedBySlot.set(key, []);
+          sortedBySlot.get(key)!.push(p);
+        });
+
+        sortedBySlot.forEach((slotPreviews) => {
+          slotPreviews.forEach((preview) => {
+            const uniqueKey = `${preview.babyId}-${preview.date}-${preview.startTime}-${preview.endTime}`;
+            if (existingIds.has(uniqueKey)) return;
+
+            const { poolId, date, startTime, endTime } = preview;
+            const check = state.checkCapacityConflict(poolId, date, startTime, endTime);
+
+            if (check.conflict) {
+              const waitlistPosition = state.getWaitlistPosition(poolId, date, startTime, endTime);
+              const waitlistApt: Appointment = {
+                id: `wait-cycle-${Date.now()}-${preview.babyId}-${Math.random().toString(36).slice(2, 5)}`,
+                babyId: preview.babyId,
+                poolId: preview.poolId,
+                date: preview.date,
+                startTime: preview.startTime,
+                endTime: preview.endTime,
+                status: 'scheduled',
+                cycleRuleId,
+                isFromCycle: true,
+                isWaitlist: true,
+                waitlistPosition,
+              };
+              newAppointments.push(waitlistApt);
+              existingIds.add(uniqueKey);
+              return;
+            }
+
+            const newApt: Appointment = {
+              id: `apt-cycle-${Date.now()}-${preview.babyId}-${Math.random().toString(36).slice(2, 5)}`,
+              babyId: preview.babyId,
+              poolId: preview.poolId,
+              date: preview.date,
+              startTime: preview.startTime,
+              endTime: preview.endTime,
+              status: 'scheduled',
+              cycleRuleId,
+              isFromCycle: true,
+              isWaitlist: false,
+            };
+            newAppointments.push(newApt);
+            existingIds.add(uniqueKey);
+          });
+        });
+
+        set((s) => ({
+          appointments: [...s.appointments, ...newAppointments],
+          previewAppointments: unselectedPreviews,
+        }));
+
+        const confirmedCount = newAppointments.filter((a) => !a.isWaitlist).length;
+        return { confirmed: confirmedCount, remaining: unselectedPreviews.length };
       },
 
       clearPreview: () => set({ previewAppointments: [] }),
