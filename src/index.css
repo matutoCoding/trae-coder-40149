@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #E3F2FD 0%, #E0F7FA 50%, #F3E5F5 100%);
+  background-attachment: fixed;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-primary-500 text-white px-4 py-2 rounded-xl font-medium transition-all duration-300 hover:bg-primary-600 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:shadow-md;
+  }
+  
+  .btn-secondary {
+    @apply bg-white text-primary-600 border-2 border-primary-300 px-4 py-2 rounded-xl font-medium transition-all duration-300 hover:bg-primary-50 hover:border-primary-400 hover:shadow-md;
+  }
+  
+  .btn-danger {
+    @apply bg-danger-500 text-white px-4 py-2 rounded-xl font-medium transition-all duration-300 hover:bg-danger-600 hover:shadow-lg;
+  }
+  
+  .card {
+    @apply bg-white rounded-2xl shadow-soft p-6 transition-all duration-300 hover:shadow-soft-lg;
+  }
+  
+  .input-field {
+    @apply w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 transition-all duration-200;
+  }
+  
+  .badge {
+    @apply px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+  
+  .sidebar-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-gray-600 transition-all duration-200 hover:bg-primary-50 hover:text-primary-600 cursor-pointer;
+  }
+  
+  .sidebar-item.active {
+    @apply bg-gradient-to-r from-primary-500 to-primary-400 text-white shadow-md;
+  }
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(79, 195, 247, 0.5);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(79, 195, 247, 0.8);
+}
+
+/* 动画延迟类 */
+.animation-delay-100 { animation-delay: 100ms; }
+.animation-delay-200 { animation-delay: 200ms; }
+.animation-delay-300 { animation-delay: 300ms; }
+.animation-delay-400 { animation-delay: 400ms; }
+.animation-delay-500 { animation-delay: 500ms; }
