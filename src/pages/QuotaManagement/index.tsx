@@ -1,23 +1,59 @@
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { CreditCard, Plus, RefreshCw, AlertTriangle, Check, ArrowRight } from 'lucide-react';
+import { CreditCard, Plus, RefreshCw, AlertTriangle, Check, ArrowRight, CheckCircle2, X, Info } from 'lucide-react';
 import type { MemberCard } from '@/types';
+import Modal from '@/components/Modal';
+import { format, addYears } from 'date-fns';
 
 export default function QuotaManagement() {
-  const { babies, memberCards, resetQuota, resetAllQuotas, consumeQuota } = useAppStore();
+  const {
+    babies,
+    memberCards,
+    resetQuota,
+    resetAllQuotas,
+    consumeQuota,
+    addMemberCard,
+    checkAndResetCycleQuotas,
+    lastAutoResetDate,
+  } = useAppStore();
+
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [resetConfirm, setResetConfirm] = useState(false);
-  
+  const [showAddCardModal, setShowAddCardModal] = useState(false);
+  const [autoResetMessage, setAutoResetMessage] = useState<{ weeklyReset: number; monthlyReset: number } | null>(null);
+
+  const [cardForm, setCardForm] = useState({
+    babyId: '',
+    cardType: '',
+    totalQuota: 3,
+    cycleType: 'weekly' as 'weekly' | 'monthly',
+    effectiveDate: format(new Date(), 'yyyy-MM-dd'),
+    expireDate: format(addYears(new Date(), 1), 'yyyy-MM-dd'),
+    selfPayPrice: 88,
+  });
+
+  useEffect(() => {
+    const result = checkAndResetCycleQuotas();
+    if (result.weeklyReset > 0 || result.monthlyReset > 0) {
+      setAutoResetMessage(result);
+      setTimeout(() => setAutoResetMessage(null), 5000);
+    }
+  }, []);
+
   const getBabyById = (babyId: string) => babies.find((b) => b.id === babyId);
-  
+
+  const babiesWithoutCard = babies.filter(
+    (b) => !memberCards.some((c) => c.babyId === b.id)
+  );
+
   const getQuotaStatus = (card: MemberCard) => {
     const ratio = card.remainingQuota / card.totalQuota;
     if (ratio === 0) return { label: '已用完', color: 'danger' };
     if (ratio <= 0.3) return { label: '额度不足', color: 'warning' };
     return { label: '正常', color: 'success' };
   };
-  
+
   const handleResetAll = () => {
     if (resetConfirm) {
       resetAllQuotas();
@@ -27,30 +63,61 @@ export default function QuotaManagement() {
       setTimeout(() => setResetConfirm(false), 3000);
     }
   };
-  
+
   const handleSelfPay = (babyId: string) => {
     const card = memberCards.find((c) => c.babyId === babyId);
     if (card) {
-      consumeQuota(babyId, 'self-pay', card.selfPayPrice);
+      consumeQuota(babyId, 'self-pay', card.selfPayPrice, '前台');
     }
   };
-  
+
   const handleConsumeQuota = (babyId: string) => {
     const card = memberCards.find((c) => c.babyId === babyId);
-    if (card && card.remainingQuota > 0) {
-      consumeQuota(babyId, 'quota', 0);
+    if (card) {
+      consumeQuota(babyId, 'quota', 0, '前台');
     }
   };
-  
+
+  const handleAddCard = () => {
+    if (!cardForm.babyId || !cardForm.cardType.trim()) return;
+    addMemberCard({
+      ...cardForm,
+      remainingQuota: cardForm.totalQuota,
+      lastResetDate: format(new Date(), 'yyyy-MM-dd'),
+    });
+    setShowAddCardModal(false);
+    setCardForm({
+      babyId: '',
+      cardType: '',
+      totalQuota: 3,
+      cycleType: 'weekly',
+      effectiveDate: format(new Date(), 'yyyy-MM-dd'),
+      expireDate: format(addYears(new Date(), 1), 'yyyy-MM-dd'),
+      selfPayPrice: 88,
+    });
+  };
+
   const totalQuota = memberCards.reduce((sum, c) => sum + c.totalQuota, 0);
   const usedQuota = memberCards.reduce((sum, c) => sum + (c.totalQuota - c.remainingQuota), 0);
   const zeroQuotaCount = memberCards.filter((c) => c.remainingQuota === 0).length;
-  
+
   const selectedCardData = memberCards.find((c) => c.id === selectedCard);
   const selectedBaby = selectedCardData ? getBabyById(selectedCardData.babyId) : null;
-  
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {autoResetMessage && (
+        <div className="p-4 bg-success-50 border border-success-200 rounded-2xl flex items-center gap-3 animate-slide-up">
+          <CheckCircle2 className="w-5 h-5 text-success-500 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="font-medium text-success-700">本周期额度自动重置完成</p>
+            <p className="text-sm text-success-600">
+              周卡重置 {autoResetMessage.weeklyReset} 张，月卡重置 {autoResetMessage.monthlyReset} 张
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">额度管控</h1>
@@ -68,13 +135,23 @@ export default function QuotaManagement() {
             <RefreshCw className="w-4 h-4" />
             {resetConfirm ? '确认重置全部?' : '重置全部额度'}
           </button>
-          <button className="btn-primary flex items-center gap-2">
+          <button
+            onClick={() => setShowAddCardModal(true)}
+            className="btn-primary flex items-center gap-2"
+          >
             <Plus className="w-4 h-4" />
             新建次卡
           </button>
         </div>
       </div>
-      
+
+      {lastAutoResetDate && (
+        <div className="p-3 bg-primary-50 rounded-xl flex items-center gap-2 text-sm text-primary-700">
+          <Info className="w-4 h-4 flex-shrink-0" />
+          <span>上次自动重置日期：{lastAutoResetDate} · 周卡每周一自动重置，月卡每月1日自动重置</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="card animate-slide-up">
           <div className="flex items-center gap-4">
@@ -87,7 +164,7 @@ export default function QuotaManagement() {
             </div>
           </div>
         </div>
-        
+
         <div className="card animate-slide-up animation-delay-100">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-success-400 to-success-600 rounded-2xl flex items-center justify-center shadow-lg">
@@ -99,7 +176,7 @@ export default function QuotaManagement() {
             </div>
           </div>
         </div>
-        
+
         <div className="card animate-slide-up animation-delay-200">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-warning-400 to-warning-500 rounded-2xl flex items-center justify-center shadow-lg">
@@ -111,7 +188,7 @@ export default function QuotaManagement() {
             </div>
           </div>
         </div>
-        
+
         <div className="card animate-slide-up animation-delay-300">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-accent-400 to-accent-500 rounded-2xl flex items-center justify-center shadow-lg">
@@ -126,7 +203,7 @@ export default function QuotaManagement() {
           </div>
         </div>
       </div>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 card">
           <div className="flex items-center justify-between mb-4">
@@ -140,7 +217,7 @@ export default function QuotaManagement() {
               </select>
             </div>
           </div>
-          
+
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -158,7 +235,7 @@ export default function QuotaManagement() {
                   const baby = getBabyById(card.babyId);
                   const status = getQuotaStatus(card);
                   const progress = (card.remainingQuota / card.totalQuota) * 100;
-                  
+
                   return (
                     <tr
                       key={card.id}
@@ -233,7 +310,7 @@ export default function QuotaManagement() {
                                 : 'bg-accent-100 text-accent-600 hover:bg-accent-200'
                             }`}
                           >
-                            {card.remainingQuota > 0 ? '扣费' : '自费'}
+                            {card.remainingQuota > 0 ? '卡扣费' : '自费'}
                           </button>
                           <button
                             onClick={(e) => {
@@ -252,13 +329,36 @@ export default function QuotaManagement() {
               </tbody>
             </table>
           </div>
+
+          {babiesWithoutCard.length > 0 && (
+            <div className="mt-4 p-4 bg-warning-50 rounded-xl">
+              <p className="text-sm text-warning-700 mb-2 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" />
+                以下宝宝尚未办理次卡：
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {babiesWithoutCard.map((baby) => (
+                  <button
+                    key={baby.id}
+                    onClick={() => {
+                      setCardForm({ ...cardForm, babyId: baby.id });
+                      setShowAddCardModal(true);
+                    }}
+                    className="px-3 py-1 bg-white text-sm rounded-lg hover:bg-warning-100 transition-colors border border-warning-200"
+                  >
+                    {baby.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-        
+
         <div className="space-y-6">
           {selectedCardData && selectedBaby ? (
             <div className="card animate-slide-up">
               <h3 className="text-lg font-semibold text-gray-800 mb-4">次卡详情</h3>
-              
+
               <div className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-5 text-white mb-4">
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-sm opacity-90">{selectedCardData.cardType}</span>
@@ -267,7 +367,7 @@ export default function QuotaManagement() {
                 <p className="text-2xl font-bold">{selectedBaby.memberCardNo}</p>
                 <p className="text-sm opacity-80 mt-1">{selectedBaby.name} 的次卡</p>
               </div>
-              
+
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">周期类型</span>
@@ -281,7 +381,11 @@ export default function QuotaManagement() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">剩余额度</span>
-                  <span className="font-bold text-lg text-primary-600">
+                  <span className={`font-bold text-lg ${
+                    selectedCardData.remainingQuota === 0 ? 'text-danger-600' :
+                    selectedCardData.remainingQuota <= selectedCardData.totalQuota * 0.3 ? 'text-warning-600' :
+                    'text-primary-600'
+                  }`}>
                     {selectedCardData.remainingQuota} 次
                   </span>
                 </div>
@@ -291,7 +395,7 @@ export default function QuotaManagement() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500">有效期</span>
-                  <span className="font-medium text-gray-800">
+                  <span className="font-medium text-gray-800 text-sm">
                     {selectedCardData.effectiveDate} ~ {selectedCardData.expireDate}
                   </span>
                 </div>
@@ -302,7 +406,7 @@ export default function QuotaManagement() {
                   </span>
                 </div>
               </div>
-              
+
               <div className="mt-6 pt-4 border-t border-gray-100 space-y-3">
                 <button
                   onClick={() => resetQuota(selectedCardData.babyId)}
@@ -311,12 +415,19 @@ export default function QuotaManagement() {
                   <RefreshCw className="w-4 h-4" />
                   重置本周期额度
                 </button>
-                {selectedCardData.remainingQuota === 0 && (
+                {selectedCardData.remainingQuota === 0 ? (
                   <button
                     onClick={() => handleSelfPay(selectedCardData.babyId)}
                     className="w-full btn-primary flex items-center justify-center gap-2"
                   >
-                    自费消费 ¥{selectedCardData.selfPayPrice}
+                    自费消费 ¥{selectedCardData.selfPayPrice}（生成明细）
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleConsumeQuota(selectedCardData.babyId)}
+                    className="w-full btn-primary flex items-center justify-center gap-2"
+                  >
+                    扣次消费
                   </button>
                 )}
               </div>
@@ -327,7 +438,7 @@ export default function QuotaManagement() {
               <p className="text-gray-500">选择一张次卡查看详情</p>
             </div>
           )}
-          
+
           <div className="card">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">额度重置规则</h3>
             <div className="space-y-3 text-sm text-gray-600">
@@ -335,7 +446,7 @@ export default function QuotaManagement() {
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-primary-600 text-xs font-bold">1</span>
                 </div>
-                <p>每周期初自动重置次卡额度，重置后剩余次数恢复为总额度</p>
+                <p>每周期初<strong>自动重置</strong>次卡额度，重置后剩余次数恢复为总额度</p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -347,12 +458,124 @@ export default function QuotaManagement() {
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-primary-600 text-xs font-bold">3</span>
                 </div>
-                <p>额度用完后自动转为自费消费，按次卡自费单价计费</p>
+                <p>额度用完后自动转为<strong>自费消费</strong>，按次卡自费单价计费并生成消费明细</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-primary-600 text-xs font-bold">4</span>
+                </div>
+                <p>周卡：<strong>每周一</strong>自动重置 &nbsp;|&nbsp; 月卡：<strong>每月1日</strong>自动重置</p>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      <Modal
+        isOpen={showAddCardModal}
+        onClose={() => setShowAddCardModal(false)}
+        title="新建次卡"
+        size="md"
+        footer={
+          <>
+            <button onClick={() => setShowAddCardModal(false)} className="btn-secondary">
+              取消
+            </button>
+            <button onClick={handleAddCard} className="btn-primary">
+              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              创建次卡
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">选择宝宝 <span className="text-danger-500">*</span></label>
+            <select
+              value={cardForm.babyId}
+              onChange={(e) => setCardForm({ ...cardForm, babyId: e.target.value })}
+              className="input-field"
+            >
+              <option value="">请选择宝宝</option>
+              {babies.map((baby) => (
+                <option key={baby.id} value={baby.id}>
+                  {baby.name}（{baby.ageMonths}个月，{baby.memberCardNo}）
+                  {memberCards.some((c) => c.babyId === baby.id) ? ' - 已有次卡' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">卡类型名称 <span className="text-danger-500">*</span></label>
+            <input
+              type="text"
+              value={cardForm.cardType}
+              onChange={(e) => setCardForm({ ...cardForm, cardType: e.target.value })}
+              placeholder="如：周卡-每周3次、月卡-每月12次"
+              className="input-field"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">周期类型</label>
+              <select
+                value={cardForm.cycleType}
+                onChange={(e) => setCardForm({ ...cardForm, cycleType: e.target.value as 'weekly' | 'monthly' })}
+                className="input-field"
+              >
+                <option value="weekly">周卡（每周重置）</option>
+                <option value="monthly">月卡（每月重置）</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">每周期次数</label>
+              <input
+                type="number"
+                min={1}
+                value={cardForm.totalQuota}
+                onChange={(e) => setCardForm({ ...cardForm, totalQuota: parseInt(e.target.value) || 1 })}
+                className="input-field"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">生效日期</label>
+              <input
+                type="date"
+                value={cardForm.effectiveDate}
+                onChange={(e) => setCardForm({ ...cardForm, effectiveDate: e.target.value })}
+                className="input-field"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">到期日期</label>
+              <input
+                type="date"
+                value={cardForm.expireDate}
+                onChange={(e) => setCardForm({ ...cardForm, expireDate: e.target.value })}
+                className="input-field"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">自费单价（额度用完后每次费用，元）</label>
+            <input
+              type="number"
+              min={0}
+              value={cardForm.selfPayPrice}
+              onChange={(e) => setCardForm({ ...cardForm, selfPayPrice: parseInt(e.target.value) || 0 })}
+              className="input-field"
+            />
+          </div>
+          <div className="p-3 bg-primary-50 rounded-xl text-sm text-primary-700">
+            <p className="flex items-center gap-2">
+              <Info className="w-4 h-4 flex-shrink-0" />
+              创建后次卡将立即生效，初始剩余额度 = 每周期次数
+            </p>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

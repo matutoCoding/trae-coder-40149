@@ -1,11 +1,14 @@
 
 import { useState } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { Repeat, Plus, Settings, Clock, Waves, Baby, Calendar, RefreshCw } from 'lucide-react';
-import { format, addDays, startOfWeek, addWeeks } from 'date-fns';
+import { Repeat, Plus, Settings, Clock, Waves, Baby, Calendar, RefreshCw, CheckCircle2, Edit2, Trash2, Star, StarOff } from 'lucide-react';
+import { format, startOfWeek, addWeeks } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import type { CycleRule, FixedSchedule } from '@/types';
+import Modal from '@/components/Modal';
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const COLORS = ['#4FC3F7', '#F48FB1', '#81C784', '#FFB74D', '#BA68C8', '#4DD0E1', '#FF8A65', '#7986CB'];
 
 export default function CycleGenerator() {
   const {
@@ -14,31 +17,124 @@ export default function CycleGenerator() {
     cycleRules,
     currentCycleRule,
     setCurrentCycleRule,
+    addCycleRule,
+    updateCycleRule,
+    deleteCycleRule,
+    setDefaultCycleRule,
     generateCycleAppointments,
-    appointments,
+    addBabyFixedSchedule,
+    updateBabyFixedSchedule,
+    removeBabyFixedSchedule,
   } = useAppStore();
-  
+
   const [selectedBaby, setSelectedBaby] = useState<string | null>(null);
+
   const [startDate, setStartDate] = useState(format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd'));
   const [endDate, setEndDate] = useState(format(addWeeks(startOfWeek(new Date(), { weekStartsOn: 1 }), 4), 'yyyy-MM-dd'));
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedCount, setGeneratedCount] = useState(0);
-  
-  const handleGenerate = () => {
+  const [generatedCount, setGeneratedCount] = useState<number | null>(null);
+
+  const [showCycleRuleModal, setShowCycleRuleModal] = useState(false);
+  const [editingCycleRule, setEditingCycleRule] = useState<CycleRule | null>(null);
+  const [cycleRuleForm, setCycleRuleForm] = useState({
+    name: '',
+    cycleType: 'weekly' as 'weekly' | 'monthly',
+    startDay: 1,
+  });
+
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [editingScheduleIndex, setEditingScheduleIndex] = useState<number | null>(null);
+  const [scheduleForm, setScheduleForm] = useState<FixedSchedule>({
+    dayOfWeek: 1,
+    startTime: '09:00',
+    endTime: '09:45',
+    poolId: pools[0]?.id || '',
+  });
+
+  const selectedBabyData = babies.find((b) => b.id === selectedBaby);
+
+  const handleGenerate = async () => {
     if (!currentCycleRule) return;
     setIsGenerating(true);
-    
-    const beforeCount = appointments.length;
-    generateCycleAppointments(startDate, endDate, currentCycleRule.id);
-    
-    setTimeout(() => {
-      setGeneratedCount(appointments.length - beforeCount);
-      setIsGenerating(false);
-    }, 800);
+    setGeneratedCount(null);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const count = generateCycleAppointments(startDate, endDate, currentCycleRule.id);
+    setGeneratedCount(count);
+    setIsGenerating(false);
   };
-  
-  const selectedBabyData = babies.find((b) => b.id === selectedBaby);
-  
+
+  const openAddCycleRule = () => {
+    setEditingCycleRule(null);
+    setCycleRuleForm({ name: '', cycleType: 'weekly', startDay: 1 });
+    setShowCycleRuleModal(true);
+  };
+
+  const openEditCycleRule = (rule: CycleRule) => {
+    setEditingCycleRule(rule);
+    setCycleRuleForm({
+      name: rule.name,
+      cycleType: rule.cycleType,
+      startDay: rule.startDay,
+    });
+    setShowCycleRuleModal(true);
+  };
+
+  const handleSaveCycleRule = () => {
+    if (!cycleRuleForm.name.trim()) return;
+    if (editingCycleRule) {
+      updateCycleRule(editingCycleRule.id, cycleRuleForm);
+    } else {
+      const newRule = addCycleRule({ ...cycleRuleForm, isDefault: false });
+      if (!currentCycleRule) setCurrentCycleRule(newRule);
+    }
+    setShowCycleRuleModal(false);
+  };
+
+  const handleDeleteCycleRule = (id: string) => {
+    if (confirm('确定要删除这个周期规则吗？')) {
+      deleteCycleRule(id);
+    }
+  };
+
+  const openAddSchedule = () => {
+    if (!selectedBaby) return;
+    setEditingScheduleIndex(null);
+    setScheduleForm({
+      dayOfWeek: 1,
+      startTime: '09:00',
+      endTime: '09:45',
+      poolId: pools[0]?.id || '',
+    });
+    setShowScheduleModal(true);
+  };
+
+  const openEditSchedule = (index: number, schedule: FixedSchedule) => {
+    setEditingScheduleIndex(index);
+    setScheduleForm({ ...schedule });
+    setShowScheduleModal(true);
+  };
+
+  const handleSaveSchedule = () => {
+    if (!selectedBaby) return;
+    if (!scheduleForm.poolId) return;
+
+    if (editingScheduleIndex !== null) {
+      updateBabyFixedSchedule(selectedBaby, editingScheduleIndex, scheduleForm);
+    } else {
+      addBabyFixedSchedule(selectedBaby, scheduleForm);
+    }
+    setShowScheduleModal(false);
+  };
+
+  const handleRemoveSchedule = (index: number) => {
+    if (!selectedBaby) return;
+    if (confirm('确定要删除这个固定时段吗？')) {
+      removeBabyFixedSchedule(selectedBaby, index);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -47,30 +143,34 @@ export default function CycleGenerator() {
           <p className="text-gray-500 mt-1">按周期批量生成宝宝游泳预约</p>
         </div>
         <div className="flex gap-3">
-          <button className="btn-secondary flex items-center gap-2">
+          <button onClick={openAddCycleRule} className="btn-secondary flex items-center gap-2">
             <Settings className="w-4 h-4" />
             周期规则
           </button>
-          <button className="btn-primary flex items-center gap-2">
-            <Plus className="w-4 h-4" />
-            添加宝宝
-          </button>
         </div>
       </div>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-6">
           <div className="card">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-              <Repeat className="w-5 h-5 text-primary-500" />
-              周期规则
-            </h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <Repeat className="w-5 h-5 text-primary-500" />
+                周期规则
+              </h3>
+              <button
+                onClick={openAddCycleRule}
+                className="p-1.5 hover:bg-primary-50 rounded-lg transition-colors"
+              >
+                <Plus className="w-4 h-4 text-primary-600" />
+              </button>
+            </div>
             <div className="space-y-3">
               {cycleRules.map((rule) => (
                 <div
                   key={rule.id}
                   onClick={() => setCurrentCycleRule(rule)}
-                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all group ${
                     currentCycleRule?.id === rule.id
                       ? 'border-primary-400 bg-primary-50'
                       : 'border-gray-100 hover:border-gray-200'
@@ -78,8 +178,13 @@ export default function CycleGenerator() {
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-medium text-gray-800">{rule.name}</p>
-                      <p className="text-sm text-gray-500">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-800">{rule.name}</p>
+                        {rule.isDefault && (
+                          <Star className="w-3.5 h-3.5 text-warning-500 fill-warning-500" />
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500 mt-0.5">
                         {rule.cycleType === 'weekly' ? '周周期' : '月周期'} · 
                         {rule.cycleType === 'weekly' 
                           ? `每周${WEEKDAYS[rule.startDay]}开始`
@@ -87,15 +192,52 @@ export default function CycleGenerator() {
                         }
                       </p>
                     </div>
-                    {rule.isDefault && (
-                      <span className="badge bg-primary-100 text-primary-600">默认</span>
-                    )}
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {!rule.isDefault && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDefaultCycleRule(rule.id);
+                          }}
+                          className="p-1.5 hover:bg-warning-50 rounded-lg"
+                          title="设为默认"
+                        >
+                          <StarOff className="w-3.5 h-3.5 text-warning-500" />
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditCycleRule(rule);
+                        }}
+                        className="p-1.5 hover:bg-gray-100 rounded-lg"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 text-gray-500" />
+                      </button>
+                      {!rule.isDefault && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteCycleRule(rule.id);
+                          }}
+                          className="p-1.5 hover:bg-danger-50 rounded-lg"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-danger-500" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
+              {cycleRules.length === 0 && (
+                <div className="text-center py-6 text-gray-400">
+                  <Settings className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                  <p>暂无周期规则</p>
+                </div>
+              )}
             </div>
           </div>
-          
+
           <div className="card">
             <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
               <Calendar className="w-5 h-5 text-primary-500" />
@@ -122,8 +264,8 @@ export default function CycleGenerator() {
               </div>
               <button
                 onClick={handleGenerate}
-                disabled={isGenerating}
-                className="w-full btn-primary flex items-center justify-center gap-2"
+                disabled={isGenerating || !currentCycleRule}
+                className="w-full btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {isGenerating ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
@@ -132,15 +274,21 @@ export default function CycleGenerator() {
                 )}
                 {isGenerating ? '生成中...' : '批量生成预约'}
               </button>
-              {generatedCount > 0 && (
-                <p className="text-sm text-center text-success-600">
-                  ✓ 成功生成 {generatedCount} 条预约
-                </p>
+              {generatedCount !== null && (
+                <div className={`p-3 rounded-xl text-center text-sm ${
+                  generatedCount > 0
+                    ? 'bg-success-50 text-success-600'
+                    : 'bg-warning-50 text-warning-600'
+                }`}>
+                  {generatedCount > 0
+                    ? `✓ 成功生成 ${generatedCount} 条新预约`
+                    : 'ℹ 未生成新预约（该时段可能已存在）'}
+                </div>
               )}
             </div>
           </div>
         </div>
-        
+
         <div className="lg:col-span-2 space-y-6">
           <div className="card">
             <div className="flex items-center justify-between mb-4">
@@ -150,7 +298,7 @@ export default function CycleGenerator() {
               </h3>
               <span className="text-sm text-gray-500">共 {babies.length} 位宝宝</span>
             </div>
-            
+
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {babies.map((baby) => (
                 <div
@@ -176,33 +324,39 @@ export default function CycleGenerator() {
                       </p>
                     </div>
                   </div>
-                  <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
                     <p className="text-xs text-gray-500">固定时段: {baby.fixedSchedule?.length || 0} 个</p>
+                    {baby.fixedSchedule && baby.fixedSchedule.length > 0 && (
+                      <span className="badge bg-primary-100 text-primary-600">可生成</span>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           </div>
-          
+
           {selectedBabyData && (
             <div className="card animate-slide-up">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-800">
                   {selectedBabyData.name} 的固定时段
                 </h3>
-                <button className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1">
+                <button
+                  onClick={openAddSchedule}
+                  className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
+                >
                   <Plus className="w-4 h-4" />
                   添加时段
                 </button>
               </div>
-              
+
               <div className="space-y-3">
                 {selectedBabyData.fixedSchedule?.map((schedule, index) => {
                   const pool = pools.find((p) => p.id === schedule.poolId);
                   return (
                     <div
                       key={index}
-                      className="flex items-center gap-4 p-4 bg-gradient-to-r from-primary-50 to-cyan-50 rounded-xl"
+                      className="flex items-center gap-4 p-4 bg-gradient-to-r from-primary-50 to-cyan-50 rounded-xl group"
                     >
                       <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm">
                         <Clock className="w-5 h-5 text-primary-500" />
@@ -217,21 +371,39 @@ export default function CycleGenerator() {
                       </div>
                       <div className="flex items-center gap-2 text-sm text-gray-600">
                         <Waves className="w-4 h-4 text-primary-400" />
-                        {pool?.name}
+                        {pool?.name || '未设置泳池'}
+                      </div>
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => openEditSchedule(index, schedule)}
+                          className="p-1.5 bg-white hover:bg-gray-50 rounded-lg shadow-sm"
+                        >
+                          <Edit2 className="w-3.5 h-3.5 text-gray-500" />
+                        </button>
+                        <button
+                          onClick={() => handleRemoveSchedule(index)}
+                          className="p-1.5 bg-white hover:bg-danger-50 rounded-lg shadow-sm"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-danger-500" />
+                        </button>
                       </div>
                     </div>
                   );
                 })}
-                
+
                 {(!selectedBabyData.fixedSchedule || selectedBabyData.fixedSchedule.length === 0) && (
-                  <div className="text-center py-8 text-gray-400">
+                  <div className="text-center py-10 text-gray-400">
                     <Clock className="w-12 h-12 mx-auto mb-2 opacity-30" />
-                    <p>暂无固定时段</p>
+                    <p className="mb-2">暂无固定时段</p>
+                    <button onClick={openAddSchedule} className="btn-secondary text-sm py-1.5">
+                      <Plus className="w-3 h-3 inline mr-1" />
+                      添加第一个时段
+                    </button>
                   </div>
                 )}
               </div>
-              
-              <div className="mt-4 pt-4 border-t border-gray-100">
+
+              <div className="mt-6 pt-4 border-t border-gray-100">
                 <h4 className="text-sm font-medium text-gray-700 mb-3">宝宝信息</h4>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -256,6 +428,149 @@ export default function CycleGenerator() {
           )}
         </div>
       </div>
+
+      <Modal
+        isOpen={showCycleRuleModal}
+        onClose={() => setShowCycleRuleModal(false)}
+        title={editingCycleRule ? '编辑周期规则' : '新增周期规则'}
+        size="sm"
+        footer={
+          <>
+            <button onClick={() => setShowCycleRuleModal(false)} className="btn-secondary">
+              取消
+            </button>
+            <button onClick={handleSaveCycleRule} className="btn-primary">
+              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              保存
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">规则名称</label>
+            <input
+              type="text"
+              value={cycleRuleForm.name}
+              onChange={(e) => setCycleRuleForm({ ...cycleRuleForm, name: e.target.value })}
+              placeholder="如：默认周周期"
+              className="input-field"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">周期类型</label>
+            <select
+              value={cycleRuleForm.cycleType}
+              onChange={(e) => setCycleRuleForm({
+                ...cycleRuleForm,
+                cycleType: e.target.value as 'weekly' | 'monthly',
+                startDay: e.target.value === 'weekly' ? 1 : 1,
+              })}
+              className="input-field"
+            >
+              <option value="weekly">周周期</option>
+              <option value="monthly">月周期</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">
+              {cycleRuleForm.cycleType === 'weekly' ? '周期开始日（周几）' : '周期开始日（几号）'}
+            </label>
+            {cycleRuleForm.cycleType === 'weekly' ? (
+              <select
+                value={cycleRuleForm.startDay}
+                onChange={(e) => setCycleRuleForm({ ...cycleRuleForm, startDay: parseInt(e.target.value) })}
+                className="input-field"
+              >
+                {WEEKDAYS.map((day, idx) => (
+                  <option key={idx} value={idx}>{day}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="number"
+                min={1}
+                max={28}
+                value={cycleRuleForm.startDay}
+                onChange={(e) => setCycleRuleForm({
+                  ...cycleRuleForm,
+                  startDay: Math.max(1, Math.min(28, parseInt(e.target.value) || 1)),
+                })}
+                className="input-field"
+              />
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        title={editingScheduleIndex !== null ? '编辑固定时段' : '新增固定时段'}
+        size="sm"
+        footer={
+          <>
+            <button onClick={() => setShowScheduleModal(false)} className="btn-secondary">
+              取消
+            </button>
+            <button onClick={handleSaveSchedule} className="btn-primary">
+              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              保存
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">每周</label>
+            <select
+              value={scheduleForm.dayOfWeek}
+              onChange={(e) => setScheduleForm({ ...scheduleForm, dayOfWeek: parseInt(e.target.value) })}
+              className="input-field"
+            >
+              {WEEKDAYS.map((day, idx) => (
+                <option key={idx} value={idx}>{day}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">开始时间</label>
+              <input
+                type="time"
+                step="900"
+                value={scheduleForm.startTime}
+                onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })}
+                className="input-field"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">结束时间</label>
+              <input
+                type="time"
+                step="900"
+                value={scheduleForm.endTime}
+                onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })}
+                className="input-field"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600 mb-1 block">指定泳池</label>
+            <select
+              value={scheduleForm.poolId}
+              onChange={(e) => setScheduleForm({ ...scheduleForm, poolId: e.target.value })}
+              className="input-field"
+            >
+              {pools.filter((p) => p.status === 'active').map((pool) => (
+                <option key={pool.id} value={pool.id}>
+                  {pool.name}（{pool.ageRange}）
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
