@@ -37,6 +37,9 @@ export interface Appointment {
   cycleRuleId?: string;
   isFromCycle: boolean;
   consumptionId?: string;
+  isWaitlist: boolean;
+  waitlistPosition?: number;
+  memberCardId?: string;
 }
 
 export interface MemberCard {
@@ -62,6 +65,7 @@ export interface Consumption {
   time: string;
   operator: string;
   remark?: string;
+  isFromWaitlist?: boolean;
 }
 
 export interface WaterRecord {
@@ -101,4 +105,20 @@ export interface GenerationResult {
   skipped: number;
   conflicts: number;
   previews: PreviewAppointment[];
+}
+
+export interface SettlementForm {
+  appointmentId: string;
+  cardId: string | null;
+  paymentType: 'quota' | 'self-pay';
+  selfPayAmount: number;
+  operator: string;
+}
+
+export interface OverlappingAppointment {
+  id: string;
+  babyId: string;
+  babyName: string;
+  startTime: string;
+  endTime: string;
 }

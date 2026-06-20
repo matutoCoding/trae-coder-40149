@@ -1,8 +1,8 @@
 
 import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { CreditCard, Plus, RefreshCw, AlertTriangle, Check, ArrowRight, CheckCircle2, X, Info, Calendar, Waves, Clock, MapPin } from 'lucide-react';
-import type { MemberCard } from '@/types';
+import { CreditCard, Plus, RefreshCw, AlertCircle, CheckCircle2, X, ChevronRight, Baby, Clock, Waves, DollarSign, Zap, CalendarDays } from 'lucide-react';
+import type { MemberCard, SettlementForm } from '@/types';
 import Modal from '@/components/Modal';
 import { format, addYears } from 'date-fns';
 
@@ -12,19 +12,25 @@ export default function QuotaManagement() {
     memberCards,
     appointments,
     pools,
-    resetQuota,
-    resetAllQuotas,
+    consumptions,
     addMemberCard,
     checkAndResetCycleQuotas,
     lastAutoResetDate,
-    completeAppointment,
-    consumptions,
+    settleAppointment,
+    resetQuota,
+    resetAllQuotas,
   } = useAppStore();
 
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [showAddCardModal, setShowAddCardModal] = useState(false);
+  const [showSettleModal, setShowSettleModal] = useState(false);
   const [autoResetMessage, setAutoResetMessage] = useState<{ weeklyReset: number; monthlyReset: number } | null>(null);
+  const [settleAppointmentId, setSettleAppointmentId] = useState<string | null>(null);
+  const [settlePaymentType, setSettlePaymentType] = useState<'quota' | 'self-pay'>('quota');
+  const [settleCardId, setSettleCardId] = useState<string | null>(null);
+  const [settleSelfPayAmount, setSettleSelfPayAmount] = useState<number>(88);
+  const [settleMessage, setSettleMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [cardForm, setCardForm] = useState({
     babyId: '',
@@ -87,9 +93,86 @@ export default function QuotaManagement() {
     });
   };
 
-  const handleCompleteAppointment = (appointmentId: string) => {
-    completeAppointment(appointmentId, '前台');
+  const handleOpenSettleModal = (appointmentId: string) => {
+    const appointment = appointments.find((a) => a.id === appointmentId);
+    if (!appointment) return;
+
+    const babyCards = memberCards.filter((c) => c.babyId === appointment.babyId);
+    const hasAvailableCard = babyCards.some((c) => c.remainingQuota > 0);
+    const firstAvailableCard = babyCards.find((c) => c.remainingQuota > 0);
+    const firstCard = babyCards[0];
+
+    setSettleAppointmentId(appointmentId);
+    setSettleCardId(firstAvailableCard?.id || firstCard?.id || null);
+    setSettlePaymentType(hasAvailableCard ? 'quota' : 'self-pay');
+    setSettleSelfPayAmount(firstCard?.selfPayPrice || 88);
+    setSettleMessage(null);
+    setShowSettleModal(true);
   };
+
+  const handlePaymentTypeChange = (type: 'quota' | 'self-pay') => {
+    if (type === 'quota') {
+      const appointment = appointments.find((a) => a.id === settleAppointmentId);
+      if (!appointment) return;
+      const babyCards = memberCards.filter((c) => c.babyId === appointment.babyId);
+      const hasAvailableCard = babyCards.some((c) => c.remainingQuota > 0);
+      if (!hasAvailableCard) {
+        setSettleMessage({ type: 'error', text: '该宝宝所有次卡均无剩余额度，已自动切换为自费结算' });
+        setSettlePaymentType('self-pay');
+        return;
+      }
+      if (!settleCardId) {
+        const firstAvailableCard = babyCards.find((c) => c.remainingQuota > 0);
+        setSettleCardId(firstAvailableCard?.id || null);
+      }
+    }
+    setSettlePaymentType(type);
+    setSettleMessage(null);
+  };
+
+  const handleCardSelect = (cardId: string) => {
+    setSettleCardId(cardId);
+    const card = memberCards.find((c) => c.id === cardId);
+    if (card && settlePaymentType === 'self-pay') {
+      setSettleSelfPayAmount(card.selfPayPrice);
+    }
+    if (card && card.remainingQuota === 0 && settlePaymentType === 'quota') {
+      setSettleMessage({ type: 'error', text: '该次卡剩余额度不足，已自动切换为自费结算' });
+      setSettlePaymentType('self-pay');
+      setSettleSelfPayAmount(card.selfPayPrice);
+    }
+  };
+
+  const handleSettleConfirm = () => {
+    if (!settleAppointmentId) return;
+
+    const form: SettlementForm = {
+      appointmentId: settleAppointmentId,
+      cardId: settlePaymentType === 'quota' ? settleCardId : null,
+      paymentType: settlePaymentType,
+      selfPayAmount: settlePaymentType === 'self-pay' ? settleSelfPayAmount : 0,
+      operator: '前台',
+    };
+
+    const result = settleAppointment(form);
+    if (result.success) {
+      setSettleMessage({ type: 'success', text: result.message });
+      setTimeout(() => {
+        setShowSettleModal(false);
+        setSettleMessage(null);
+      }, 1500);
+    } else {
+      setSettleMessage({ type: 'error', text: result.message });
+    }
+  };
+
+  const currentSettleAppointment = appointments.find((a) => a.id === settleAppointmentId);
+  const currentSettleBaby = currentSettleAppointment ? getBabyById(currentSettleAppointment.babyId) : null;
+  const currentSettlePool = currentSettleAppointment ? getPoolById(currentSettleAppointment.poolId) : null;
+  const currentSettleBabyCards = currentSettleAppointment
+    ? memberCards.filter((c) => c.babyId === currentSettleAppointment.babyId)
+    : [];
+  const selectedSettleCard = memberCards.find((c) => c.id === settleCardId);
 
   const scheduledAppointments = appointments.filter(
     (a) => a.status === 'scheduled'
@@ -159,7 +242,7 @@ export default function QuotaManagement() {
 
       {lastAutoResetDate && (
         <div className="p-3 bg-primary-50 rounded-xl flex items-center gap-2 text-sm text-primary-700">
-          <Info className="w-4 h-4 flex-shrink-0" />
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
           <span>上次自动重置日期：{lastAutoResetDate} · 周卡每周一自动重置，月卡每月1日自动重置</span>
         </div>
       )}
@@ -180,7 +263,7 @@ export default function QuotaManagement() {
         <div className="card animate-slide-up animation-delay-100">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-success-400 to-success-600 rounded-2xl flex items-center justify-center shadow-lg">
-              <Check className="w-6 h-6 text-white" />
+              <Zap className="w-6 h-6 text-white" />
             </div>
             <div>
               <p className="text-sm text-gray-500">已用额度</p>
@@ -192,7 +275,7 @@ export default function QuotaManagement() {
         <div className="card animate-slide-up animation-delay-200">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-warning-400 to-warning-500 rounded-2xl flex items-center justify-center shadow-lg">
-              <AlertTriangle className="w-6 h-6 text-white" />
+              <AlertCircle className="w-6 h-6 text-white" />
             </div>
             <div>
               <p className="text-sm text-gray-500">额度用完</p>
@@ -204,7 +287,7 @@ export default function QuotaManagement() {
         <div className="card animate-slide-up animation-delay-300">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-gradient-to-br from-accent-400 to-accent-500 rounded-2xl flex items-center justify-center shadow-lg">
-              <Calendar className="w-6 h-6 text-white" />
+              <CalendarDays className="w-6 h-6 text-white" />
             </div>
             <div>
               <p className="text-sm text-gray-500">待结算预约</p>
@@ -218,7 +301,7 @@ export default function QuotaManagement() {
         <div className="card">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-primary-500" />
+              <CalendarDays className="w-5 h-5 text-primary-500" />
               待结算预约
             </h3>
             <span className="badge bg-primary-100 text-primary-600">{scheduledAppointments.length} 个预约</span>
@@ -282,11 +365,11 @@ export default function QuotaManagement() {
                       </td>
                       <td className="py-3">
                         <button
-                          onClick={() => handleCompleteAppointment(appt.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-success-100 text-success-700 hover:bg-success-200 transition-colors font-medium"
+                          onClick={() => handleOpenSettleModal(appt.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-primary-500 text-white hover:bg-primary-600 transition-colors font-medium"
                         >
-                          <Waves className="w-4 h-4" />
-                          完成游泳
+                          <DollarSign className="w-4 h-4" />
+                          结算
                         </button>
                       </td>
                     </tr>
@@ -410,7 +493,7 @@ export default function QuotaManagement() {
           {babiesWithoutCard.length > 0 && (
             <div className="mt-4 p-4 bg-warning-50 rounded-xl">
               <p className="text-sm text-warning-700 mb-2 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
+                <AlertCircle className="w-4 h-4" />
                 以下宝宝尚未办理次卡：
               </p>
               <div className="flex flex-wrap gap-2">
@@ -499,7 +582,7 @@ export default function QuotaManagement() {
               {selectedBabyScheduledAppointments.length > 0 && (
                 <div className="card animate-slide-up">
                   <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <Calendar className="w-5 h-5 text-primary-500" />
+                    <CalendarDays className="w-5 h-5 text-primary-500" />
                     待结算预约
                   </h3>
                   <div className="space-y-3">
@@ -512,15 +595,15 @@ export default function QuotaManagement() {
                         >
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <Calendar className="w-4 h-4 text-primary-500" />
+                              <CalendarDays className="w-4 h-4 text-primary-500" />
                               <span className="font-medium text-gray-800">{appt.date}</span>
                             </div>
                             <button
-                              onClick={() => handleCompleteAppointment(appt.id)}
-                              className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-success-500 text-white hover:bg-success-600 transition-colors font-medium"
+                              onClick={() => handleOpenSettleModal(appt.id)}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-primary-500 text-white hover:bg-primary-600 transition-colors font-medium"
                             >
-                              <Waves className="w-3.5 h-3.5" />
-                              完成游泳
+                              <DollarSign className="w-3.5 h-3.5" />
+                              去结算
                             </button>
                           </div>
                           <div className="flex items-center gap-4 text-sm text-gray-600">
@@ -529,7 +612,7 @@ export default function QuotaManagement() {
                               {appt.startTime} - {appt.endTime}
                             </span>
                             <span className="flex items-center gap-1">
-                              <MapPin className="w-3.5 h-3.5" />
+                              <Waves className="w-3.5 h-3.5" />
                               {pool?.name || '-'}
                             </span>
                           </div>
@@ -544,10 +627,10 @@ export default function QuotaManagement() {
                 <div className="card animate-slide-up">
                   <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
                     <Waves className="w-5 h-5 text-success-500" />
-                    预约关联消费
+                    消费记录
                   </h3>
                   <div className="space-y-3">
-                    {selectedBabyLinkedConsumptions.map((cons) => {
+                    {selectedBabyLinkedConsumptions.slice(0, 5).map((cons) => {
                       const linkedAppt = appointments.find((a) => a.id === cons.appointmentId);
                       const pool = linkedAppt ? getPoolById(linkedAppt.poolId) : null;
                       return (
@@ -608,7 +691,7 @@ export default function QuotaManagement() {
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-primary-600 text-xs font-bold">3</span>
                 </div>
-                <p>点击"完成游泳"结算预约时，有额度则<strong>次卡扣费</strong>，无额度则<strong>自费消费</strong></p>
+                <p>点击"结算"按钮可选择<strong>次卡扣费</strong>或<strong>自费消费</strong></p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -720,10 +803,182 @@ export default function QuotaManagement() {
           </div>
           <div className="p-3 bg-primary-50 rounded-xl text-sm text-primary-700">
             <p className="flex items-center gap-2">
-              <Info className="w-4 h-4 flex-shrink-0" />
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
               创建后次卡将立即生效，初始剩余额度 = 每周期次数
             </p>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showSettleModal}
+        onClose={() => setShowSettleModal(false)}
+        title="结算预约"
+        size="lg"
+        footer={
+          <>
+            <button onClick={() => setShowSettleModal(false)} className="btn-secondary">
+              取消
+            </button>
+            <button onClick={handleSettleConfirm} className="btn-primary">
+              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              确认结算
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-6">
+          {settleMessage && (
+            <div className={`p-4 rounded-xl flex items-center gap-3 ${
+              settleMessage.type === 'success'
+                ? 'bg-success-50 border border-success-200'
+                : 'bg-warning-50 border border-warning-200'
+            }`}>
+              {settleMessage.type === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 text-success-500 flex-shrink-0" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-warning-500 flex-shrink-0" />
+              )}
+              <p className={`font-medium ${
+                settleMessage.type === 'success' ? 'text-success-700' : 'text-warning-700'
+              }`}>
+                {settleMessage.text}
+              </p>
+            </div>
+          )}
+
+          {currentSettleBaby && currentSettleAppointment && (
+            <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl">
+              <div
+                className="w-14 h-14 rounded-full flex items-center justify-center text-white font-bold text-lg"
+                style={{ backgroundColor: currentSettleBaby.avatarColor }}
+              >
+                {currentSettleBaby.name.charAt(0)}
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <Baby className="w-4 h-4 text-primary-500" />
+                  <span className="font-semibold text-gray-800 text-lg">{currentSettleBaby.name}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
+                  <span className="flex items-center gap-1">
+                    <CalendarDays className="w-3.5 h-3.5" />
+                    {currentSettleAppointment.date}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5" />
+                    {currentSettleAppointment.startTime} - {currentSettleAppointment.endTime}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Waves className="w-3.5 h-3.5" />
+                    {currentSettlePool?.name || '-'}
+                  </span>
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-gray-300" />
+            </div>
+          )}
+
+          <div className="flex bg-gray-100 p-1 rounded-xl">
+            <button
+              onClick={() => handlePaymentTypeChange('quota')}
+              disabled={currentSettleBabyCards.length === 0}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all ${
+                settlePaymentType === 'quota'
+                  ? 'bg-white text-primary-600 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed'
+              }`}
+            >
+              <CreditCard className="w-4 h-4" />
+              次卡扣费
+            </button>
+            <button
+              onClick={() => handlePaymentTypeChange('self-pay')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all ${
+                settlePaymentType === 'self-pay'
+                  ? 'bg-white text-primary-600 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <DollarSign className="w-4 h-4" />
+              自费
+            </button>
+          </div>
+
+          {currentSettleBabyCards.length > 0 ? (
+            <div className="space-y-3">
+              <h4 className="font-medium text-gray-800">选择次卡</h4>
+              <div className="space-y-2">
+                {currentSettleBabyCards.map((card) => {
+                  const hasQuota = card.remainingQuota > 0;
+                  return (
+                    <label
+                      key={card.id}
+                      className={`flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                        settleCardId === card.id
+                          ? 'border-primary-500 bg-primary-50/50'
+                          : 'border-gray-100 hover:border-gray-200 bg-white'
+                      } ${!hasQuota && settlePaymentType === 'quota' ? 'opacity-50' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="settleCard"
+                        value={card.id}
+                        checked={settleCardId === card.id}
+                        onChange={() => handleCardSelect(card.id)}
+                        className="w-4 h-4 text-primary-600"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium text-gray-800">{card.cardType}</span>
+                          <span className={`badge ${
+                            card.remainingQuota === 0
+                              ? 'bg-danger-100 text-danger-600'
+                              : card.remainingQuota <= card.totalQuota * 0.3
+                                ? 'bg-warning-100 text-warning-600'
+                                : 'bg-success-100 text-success-600'
+                          }`}>
+                            余{card.remainingQuota} / {card.totalQuota}次
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4 text-sm text-gray-500">
+                          <span className="flex items-center gap-1">
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            {card.cycleType === 'weekly' ? '周卡' : '月卡'}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="w-3.5 h-3.5" />
+                            自费 ¥{card.selfPayPrice}/次
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="p-4 bg-gray-50 rounded-xl text-center">
+              <AlertCircle className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+              <p className="text-gray-600">该宝宝暂无次卡，仅可自费结算</p>
+            </div>
+          )}
+
+          {settlePaymentType === 'self-pay' && (
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">自费金额（元）</label>
+              <div className="relative">
+                <DollarSign className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="number"
+                  min={0}
+                  value={settleSelfPayAmount}
+                  onChange={(e) => setSettleSelfPayAmount(parseFloat(e.target.value) || 0)}
+                  className="input-field pl-10 text-lg font-bold text-accent-600"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
     </div>

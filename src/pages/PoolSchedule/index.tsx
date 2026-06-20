@@ -1,32 +1,54 @@
 import { useState, useMemo } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { ChevronLeft, ChevronRight, Plus, Settings, Clock, Users, X, Edit2, Trash2, CheckCircle2, AlertTriangle, Check } from 'lucide-react';
-import { format, addDays, startOfWeek, endOfWeek, isSameDay, addWeeks } from 'date-fns';
+import {
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Settings,
+  X,
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  User,
+  Waves,
+  Bell,
+  RefreshCw,
+  Edit,
+  Trash2,
+} from 'lucide-react';
+import { format, addDays, startOfWeek, endOfWeek, isSameDay, addWeeks, parseISO } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import type { Pool, Appointment } from '@/types';
 import Modal from '@/components/Modal';
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const TIME_SLOTS = ['09:00', '09:45', '10:30', '11:15', '14:00', '14:45', '15:30', '16:15'];
-const AVATAR_COLORS = ['#4FC3F7', '#F48FB1', '#81C784', '#FFB74D', '#BA68C8', '#4DD0E1', '#FF8A65', '#7986CB'];
 
 export default function PoolSchedule() {
   const {
     pools,
     babies,
     appointments,
+    memberCards,
     addPool,
     updatePool,
     deletePool,
     addAppointment,
     updateAppointment,
     cancelAppointment,
-    completeAppointment,
+    settleAppointment,
     checkCapacityConflict,
+    getOverlappingAppointments,
+    getWaitlistPosition,
+    addToWaitlist,
+    waitlistNotifications,
+    clearWaitlistNotifications,
   } = useAppStore();
 
   const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [selectedPool, setSelectedPool] = useState<string>(pools[0]?.id || '');
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
 
   const [showPoolModal, setShowPoolModal] = useState(false);
   const [editingPool, setEditingPool] = useState<Pool | null>(null);
@@ -44,7 +66,7 @@ export default function PoolSchedule() {
   });
   const [capacityWarning, setCapacityWarning] = useState<{
     conflict: boolean;
-    conflictingBabies: { babyId: string; babyName: string }[];
+    conflictingBabies: { babyId: string; babyName: string; startTime: string; endTime: string }[];
     remainSlots: number;
   } | null>(null);
 
@@ -57,6 +79,11 @@ export default function PoolSchedule() {
     [appointments, selectedPool]
   );
 
+  const showToast = (message: string, type: 'success' | 'info' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const getAppointmentsForSlot = (date: Date, time: string) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     return filteredAppointments.filter(
@@ -68,10 +95,9 @@ export default function PoolSchedule() {
     const dateStr = format(date, 'yyyy-MM-dd');
     const pool = pools.find((p) => p.id === selectedPool);
     const capacity = pool?.capacity || 0;
-    const count = filteredAppointments.filter(
-      (a) => a.date === dateStr && a.startTime === startTime && a.status !== 'cancelled'
-    ).length;
-    return { count, capacity };
+    const endTime = TIME_SLOTS[TIME_SLOTS.indexOf(startTime) + 1] || startTime;
+    const overlapping = getOverlappingAppointments(selectedPool, dateStr, startTime, endTime);
+    return { count: overlapping.length, capacity };
   };
 
   const handlePrevWeek = () => setCurrentWeekStart(addWeeks(currentWeekStart, -1));
@@ -150,9 +176,15 @@ export default function PoolSchedule() {
     );
 
     if (result.conflict) {
+      const overlappingWithTimes = result.overlappingAppointments.map((o) => ({
+        babyId: o.babyId,
+        babyName: o.babyName,
+        startTime: o.startTime,
+        endTime: o.endTime,
+      }));
       setCapacityWarning({
         conflict: result.conflict,
-        conflictingBabies: result.conflictingBabies,
+        conflictingBabies: overlappingWithTimes,
         remainSlots: result.remainSlots,
       });
       return;
@@ -177,15 +209,52 @@ export default function PoolSchedule() {
     setShowAppointmentModal(false);
   };
 
+  const handleAddToWaitlist = () => {
+    if (!appointmentForm.babyId || !appointmentForm.poolId) return;
+
+    addToWaitlist({
+      babyId: appointmentForm.babyId,
+      poolId: appointmentForm.poolId,
+      date: appointmentForm.date,
+      startTime: appointmentForm.startTime,
+      endTime: appointmentForm.endTime,
+      status: 'scheduled',
+      isFromCycle: false,
+    });
+
+    setCapacityWarning(null);
+    setShowAppointmentModal(false);
+    showToast('已加入候补队列', 'success');
+  };
+
   const handleCancelAppointment = (id: string) => {
     if (confirm('确定要取消这个预约吗？')) {
-      cancelAppointment(id);
+      const result = cancelAppointment(id);
+      if (result.promoted && result.promoted.length > 0) {
+        const promotedBaby = babies.find((b) => b.id === result.promoted![0].babyId);
+        showToast(`候补宝宝 ${promotedBaby?.name || '未知'} 已自动转正`, 'info');
+      }
+      setShowAppointmentModal(false);
     }
   };
 
   const handleCompleteAppointment = () => {
     if (!editingAppointmentId) return;
-    completeAppointment(editingAppointmentId, '前台');
+    const apt = appointments.find((a) => a.id === editingAppointmentId);
+    if (!apt) return;
+
+    const babyCards = memberCards.filter((c) => c.babyId === apt.babyId && c.remainingQuota > 0);
+    const cardToUse = babyCards[0];
+
+    const result = settleAppointment({
+      appointmentId: editingAppointmentId,
+      cardId: cardToUse?.id || null,
+      paymentType: cardToUse ? 'quota' : 'self-pay',
+      selfPayAmount: cardToUse?.selfPayPrice || 88,
+      operator: '前台',
+    });
+
+    showToast(result.message, result.success ? 'success' : 'info');
     setShowAppointmentModal(false);
   };
 
@@ -195,8 +264,54 @@ export default function PoolSchedule() {
     ? appointments.find((a) => a.id === editingAppointmentId)
     : null;
 
+  const formatDate = (dateStr: string) => {
+    try {
+      return format(parseISO(dateStr), 'MM月dd日', { locale: zhCN });
+    } catch {
+      return dateStr;
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {waitlistNotifications.length > 0 && (
+        <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Bell className="w-5 h-5 text-amber-600" />
+              <div>
+                <p className="text-amber-800 font-medium">
+                  🎉 候补转正提醒：
+                  {waitlistNotifications.map((n, i) => (
+                    <span key={i}>
+                      {i > 0 && '、'}
+                      <span className="font-semibold">{n.babyName}</span> 在 {n.poolName} {formatDate(n.date)} 已自动转正
+                    </span>
+                  ))}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={clearWaitlistNotifications}
+              className="p-2 hover:bg-amber-100 rounded-xl transition-colors"
+            >
+              <X className="w-4 h-4 text-amber-600" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div
+          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg animate-slide-up flex items-center gap-2 ${
+            toast.type === 'success' ? 'bg-success-500 text-white' : 'bg-primary-500 text-white'
+          }`}
+        >
+          {toast.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
+          {toast.message}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">泳池排期</h1>
@@ -226,6 +341,7 @@ export default function PoolSchedule() {
                   : 'bg-white text-gray-600 hover:bg-gray-50 shadow-soft'
               }`}
             >
+              <Waves className="w-4 h-4 inline mr-1" />
               {pool.name}
               {pool.status === 'maintenance' && (
                 <span className="ml-2 text-xs bg-warning-100 text-warning-600 px-2 py-0.5 rounded-full">
@@ -260,16 +376,21 @@ export default function PoolSchedule() {
             </button>
             <button
               onClick={handleToday}
-              className="px-3 py-1.5 text-sm bg-primary-50 text-primary-600 rounded-lg hover:bg-primary-100 transition-colors"
+              className="px-3 py-1.5 text-sm bg-primary-50 text-primary-600 rounded-lg hover:bg-primary-100 transition-colors flex items-center gap-1"
             >
+              <RefreshCw className="w-3.5 h-3.5" />
               本周
             </button>
           </div>
 
           <div className="flex items-center gap-4 text-sm">
             <span className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-primary-400"></span>
+              <span className="w-3 h-3 rounded-full bg-gradient-to-r from-primary-400 to-primary-500"></span>
               预约中
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full bg-gradient-to-r from-amber-400 to-orange-400"></span>
+              候补中
             </span>
             <span className="flex items-center gap-2">
               <span className="w-3 h-3 rounded-full bg-success-400"></span>
@@ -322,15 +443,15 @@ export default function PoolSchedule() {
                       >
                         <div className={`absolute top-1 right-1 text-[10px] font-medium px-1 rounded ${
                           isFull
-                            ? 'bg-danger-100 text-danger-600'
+                            ? 'text-danger-600 font-bold'
                             : count > 0
-                              ? 'bg-primary-100 text-primary-600'
+                              ? 'text-primary-600'
                               : 'text-gray-400'
                         }`}>
                           {count}/{capacity}
                         </div>
                         {slotAppointments.length > 0 && (
-                          <div className="space-y-1">
+                          <div className="space-y-1 mt-4">
                             {slotAppointments.map((apt) => {
                               const baby = babies.find((b) => b.id === apt.babyId);
                               if (apt.startTime !== time) return null;
@@ -338,14 +459,23 @@ export default function PoolSchedule() {
                                 <div
                                   key={apt.id}
                                   onClick={() => openEditAppointment(apt)}
-                                  className={`px-2 py-1.5 rounded-lg text-xs text-white cursor-pointer hover:opacity-90 transition-opacity truncate ${
-                                    apt.status === 'scheduled' ? 'bg-gradient-to-r from-primary-400 to-primary-500' :
-                                    apt.status === 'completed' ? 'bg-gradient-to-r from-success-400 to-success-500' :
-                                    'bg-gradient-to-r from-danger-400 to-danger-500'
+                                  className={`px-2 py-1.5 rounded-lg text-xs text-white cursor-pointer hover:opacity-90 transition-opacity relative ${
+                                    apt.isWaitlist
+                                      ? 'bg-gradient-to-r from-amber-400 to-orange-400'
+                                      : apt.status === 'scheduled'
+                                        ? 'bg-gradient-to-r from-primary-400 to-primary-500'
+                                        : apt.status === 'completed'
+                                          ? 'bg-gradient-to-r from-success-400 to-success-500'
+                                          : 'bg-gradient-to-r from-danger-400 to-danger-500'
                                   }`}
                                   title={`点击编辑: ${baby?.name} - ${apt.startTime}~${apt.endTime}`}
                                 >
-                                  {baby?.name}
+                                  {apt.isWaitlist && apt.waitlistPosition && (
+                                    <span className="absolute -top-1 -right-1 bg-orange-600 text-white text-[9px] px-1 rounded-full font-bold">
+                                      候补#{apt.waitlistPosition}
+                                    </span>
+                                  )}
+                                  <span className="truncate block pr-4">{baby?.name}</span>
                                 </div>
                               );
                             })}
@@ -365,7 +495,7 @@ export default function PoolSchedule() {
         <div className="card">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-              <Users className="w-5 h-5 text-primary-500" />
+              <Waves className="w-5 h-5 text-primary-500" />
               泳池信息
             </h3>
             <button onClick={openAddPool} className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1">
@@ -404,7 +534,7 @@ export default function PoolSchedule() {
                         onClick={() => openEditPool(pool)}
                         className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                       >
-                        <Edit2 className="w-4 h-4 text-gray-500" />
+                        <Edit className="w-4 h-4 text-gray-500" />
                       </button>
                       <button
                         onClick={() => handleDeletePool(pool.id)}
@@ -421,11 +551,17 @@ export default function PoolSchedule() {
         </div>
 
         <div className="card">
-          <h3 className="text-lg font-semibold text-gray-800 mb-4">今日预约详情</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-primary-500" />
+            今日预约详情
+          </h3>
           <div className="space-y-3 max-h-80 overflow-y-auto">
             {appointments
               .filter((a) => a.date === new Date().toISOString().split('T')[0] && a.poolId === selectedPool && a.status !== 'cancelled')
-              .sort((a, b) => a.startTime.localeCompare(b.startTime))
+              .sort((a, b) => {
+                if (a.isWaitlist !== b.isWaitlist) return a.isWaitlist ? 1 : -1;
+                return a.startTime.localeCompare(b.startTime);
+              })
               .map((apt) => {
                 const baby = babies.find((b) => b.id === apt.babyId);
                 return (
@@ -434,25 +570,36 @@ export default function PoolSchedule() {
                     className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-xl transition-colors group"
                   >
                     <div
-                      className="w-10 h-10 rounded-full flex items-center justify-center text-white font-medium text-sm"
-                      style={{ backgroundColor: baby?.avatarColor || '#ccc' }}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-medium text-sm ${
+                        apt.isWaitlist ? 'bg-gradient-to-br from-amber-400 to-orange-400' : ''
+                      }`}
+                      style={!apt.isWaitlist ? { backgroundColor: baby?.avatarColor || '#ccc' } : {}}
                     >
                       {baby?.name?.charAt(0)}
                     </div>
                     <div className="flex-1">
-                      <p className="font-medium text-gray-800">{baby?.name}</p>
+                      <p className="font-medium text-gray-800 flex items-center gap-2">
+                        {baby?.name}
+                        {apt.isWaitlist && apt.waitlistPosition && (
+                          <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full font-medium">
+                            候补#{apt.waitlistPosition}
+                          </span>
+                        )}
+                      </p>
                       <p className="text-xs text-gray-500">
                         {apt.startTime} - {apt.endTime} · {baby?.parentName}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className={`badge ${
+                        apt.isWaitlist ? 'bg-amber-100 text-amber-600' :
                         apt.status === 'scheduled' ? 'bg-primary-100 text-primary-600' :
                         apt.status === 'completed' ? 'bg-success-100 text-success-600' :
                         apt.status === 'cancelled' ? 'bg-gray-100 text-gray-500' :
                         'bg-danger-100 text-danger-600'
                       }`}>
-                        {apt.status === 'scheduled' ? '待游泳' :
+                        {apt.isWaitlist ? '候补中' :
+                         apt.status === 'scheduled' ? '待游泳' :
                          apt.status === 'completed' ? '已完成' :
                          apt.status === 'cancelled' ? '已取消' : '未到店'}
                       </span>
@@ -461,7 +608,7 @@ export default function PoolSchedule() {
                           onClick={() => openEditAppointment(apt)}
                           className="p-1.5 hover:bg-gray-100 rounded-lg"
                         >
-                          <Edit2 className="w-3.5 h-3.5 text-gray-500" />
+                          <Edit className="w-3.5 h-3.5 text-gray-500" />
                         </button>
                         <button
                           onClick={() => handleCancelAppointment(apt.id)}
@@ -495,7 +642,7 @@ export default function PoolSchedule() {
               取消
             </button>
             <button onClick={handleSavePool} className="btn-primary">
-              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              <CheckCircle className="w-4 h-4 inline mr-1" />
               保存
             </button>
           </>
@@ -560,12 +707,21 @@ export default function PoolSchedule() {
             <button onClick={() => { setShowAppointmentModal(false); setCapacityWarning(null); }} className="btn-secondary">
               取消
             </button>
+            {capacityWarning && capacityWarning.conflict && !isEditAppointment && (
+              <button
+                onClick={handleAddToWaitlist}
+                className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white px-4 py-2 rounded-xl font-medium transition-all flex items-center gap-1"
+              >
+                <Clock className="w-4 h-4" />
+                加入候补
+              </button>
+            )}
             {isEditAppointment && editingAppointment?.status === 'scheduled' && (
               <button
                 onClick={handleCompleteAppointment}
                 className="bg-success-500 hover:bg-success-600 text-white px-4 py-2 rounded-xl font-medium transition-colors flex items-center gap-1"
               >
-                <Check className="w-4 h-4" />
+                <CheckCircle className="w-4 h-4" />
                 完成游泳
               </button>
             )}
@@ -573,8 +729,6 @@ export default function PoolSchedule() {
               <button
                 onClick={() => {
                   if (editingAppointmentId) handleCancelAppointment(editingAppointmentId);
-                  setShowAppointmentModal(false);
-                  setCapacityWarning(null);
                 }}
                 className="btn-danger"
               >
@@ -582,7 +736,7 @@ export default function PoolSchedule() {
               </button>
             )}
             <button onClick={handleSaveAppointment} className="btn-primary">
-              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              <CheckCircle className="w-4 h-4 inline mr-1" />
               {isEditAppointment ? '保存修改' : '确认预约'}
             </button>
           </>
@@ -596,15 +750,20 @@ export default function PoolSchedule() {
                 该时段已满，剩余名额: 0
               </div>
               <div className="text-sm text-danger-600">
-                <p className="mb-1">已预约宝宝：</p>
-                <div className="flex flex-wrap gap-1">
+                <p className="mb-2">已预约宝宝：</p>
+                <div className="space-y-1">
                   {capacityWarning.conflictingBabies.map((b) => (
-                    <span key={b.babyId} className="bg-danger-100 text-danger-700 px-2 py-0.5 rounded-full text-xs">
-                      {b.babyName}
-                    </span>
+                    <div key={b.babyId} className="flex items-center gap-2 bg-danger-100 text-danger-700 px-2 py-1 rounded-lg text-xs">
+                      <User className="w-3 h-3" />
+                      <span className="font-medium">{b.babyName}</span>
+                      <span className="text-danger-500">{b.startTime}~{b.endTime}</span>
+                    </div>
                   ))}
                 </div>
-                <p className="mt-2 text-danger-500">请更换泳池或时间后再试</p>
+                <p className="mt-3 text-danger-500 flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  可点击"加入候补"按钮进入候补队列
+                </p>
               </div>
             </div>
           )}

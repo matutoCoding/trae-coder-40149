@@ -1,7 +1,7 @@
 
 import { useState } from 'react';
 import { useAppStore } from '@/store/appStore';
-import { Receipt, Thermometer, Search, Download, Plus, CheckCircle2, Waves, Link2, CreditCard } from 'lucide-react';
+import { Receipt, Thermometer, Search, Download, Plus, CheckCircle2, Waves, Link2, CreditCard, AlertCircle, BadgeCheck } from 'lucide-react';
 import { format } from 'date-fns';
 import Modal from '@/components/Modal';
 
@@ -20,6 +20,7 @@ export default function Consumption() {
   const [searchText, setSearchText] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterPool, setFilterPool] = useState('all');
+  const [filterSource, setFilterSource] = useState('all');
 
   const [showAddWaterModal, setShowAddWaterModal] = useState(false);
   const [waterForm, setWaterForm] = useState({
@@ -34,7 +35,8 @@ export default function Consumption() {
     const baby = babies.find((b) => b.id === c.babyId);
     const matchSearch = baby?.name.includes(searchText) || searchText === '';
     const matchType = filterType === 'all' || c.type === filterType;
-    return matchSearch && matchType;
+    const matchSource = filterSource === 'all' || (filterSource === 'waitlist' ? c.isFromWaitlist : !c.isFromWaitlist);
+    return matchSearch && matchType && matchSource;
   });
 
   const filteredWaterRecords = waterRecords.filter((r) => {
@@ -45,6 +47,7 @@ export default function Consumption() {
   const selfPayCount = consumptions.filter((c) => c.type === 'self-pay').length;
   const selfPayAmount = consumptions.filter((c) => c.type === 'self-pay').reduce((sum, c) => sum + c.amount, 0);
   const linkedCount = consumptions.filter((c) => c.appointmentId).length;
+  const waitlistCount = consumptions.filter((c) => c.isFromWaitlist).length;
 
   const getBabyById = (babyId: string) => babies.find((b) => b.id === babyId);
   const getPoolById = (poolId: string) => pools.find((p) => p.id === poolId);
@@ -96,6 +99,10 @@ export default function Consumption() {
         <div className="card animate-slide-up animation-delay-400">
           <p className="text-sm text-gray-500">预约关联</p>
           <p className="text-2xl font-bold text-secondary-500 mt-2">{linkedCount} 条</p>
+        </div>
+        <div className="card animate-slide-up animation-delay-500">
+          <p className="text-sm text-gray-500">候补转正</p>
+          <p className="text-2xl font-bold text-amber-600 mt-2">{waitlistCount} 条</p>
         </div>
       </div>
 
@@ -150,6 +157,15 @@ export default function Consumption() {
                   <option value="quota">次卡扣费</option>
                   <option value="self-pay">自费消费</option>
                 </select>
+                <select
+                  value={filterSource}
+                  onChange={(e) => setFilterSource(e.target.value)}
+                  className="input-field text-sm py-2 w-40"
+                >
+                  <option value="all">全部来源</option>
+                  <option value="normal">正常预约</option>
+                  <option value="waitlist">候补转正</option>
+                </select>
               </div>
               <span className="text-sm text-gray-500">
                 共 {filteredConsumptions.length} 条记录
@@ -164,6 +180,7 @@ export default function Consumption() {
                     <th className="pb-3 font-medium">宝宝</th>
                     <th className="pb-3 font-medium">消费类型</th>
                     <th className="pb-3 font-medium">金额</th>
+                    <th className="pb-3 font-medium">来源</th>
                     <th className="pb-3 font-medium">关联预约</th>
                     <th className="pb-3 font-medium">使用次卡</th>
                     <th className="pb-3 font-medium">操作员</th>
@@ -211,11 +228,31 @@ export default function Consumption() {
                           </span>
                         </td>
                         <td className="py-4">
+                          {item.isFromWaitlist ? (
+                            <span className="inline-flex items-center gap-1 badge bg-amber-100 text-amber-700">
+                              <AlertCircle className="w-3 h-3" />
+                              候补转正
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 badge bg-primary-100 text-primary-600">
+                              <BadgeCheck className="w-3 h-3" />
+                              正常预约
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-4">
                           {appointment ? (
                             <div className="flex items-center gap-1.5">
                               <Link2 className="w-3.5 h-3.5 text-primary-400" />
                               <div className="text-xs">
-                                <p className="text-gray-700 font-medium">{appointment.date}</p>
+                                <p className="text-gray-700 font-medium flex items-center gap-1">
+                                  {appointment.date}
+                                  {item.isFromWaitlist && (
+                                    <span className="text-[10px] bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded">
+                                      候补
+                                    </span>
+                                  )}
+                                </p>
                                 <p className="text-gray-500">{appointment.startTime}-{appointment.endTime} · {appointmentPool?.name}</p>
                               </div>
                             </div>

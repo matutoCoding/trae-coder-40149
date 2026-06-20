@@ -1,12 +1,10 @@
-
 import { useState, useMemo } from 'react';
 import { useAppStore } from '@/store/appStore';
 import {
-  Repeat, Plus, Settings, Clock, Waves, Baby, Calendar,
-  RefreshCw, CheckCircle2, Edit2, Trash2, Star, StarOff,
-  Eye, Filter, AlertTriangle, Copy, XCircle
+  Repeat, Plus, Calendar, Clock, Waves, Check, Star, AlertTriangle, X,
+  ChevronDown, Filter, Download, RefreshCw, Edit2, Trash2
 } from 'lucide-react';
-import { format, startOfWeek, addWeeks, parseISO } from 'date-fns';
+import { format, startOfWeek, addWeeks, parseISO, eachDayOfInterval, getDay, addDays, startOfMonth, getDaysInMonth } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import type { CycleRule, FixedSchedule, PreviewAppointment, GenerationResult } from '@/types';
 import Modal from '@/components/Modal';
@@ -56,6 +54,7 @@ export default function CycleGenerator() {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [reasonFilter, setReasonFilter] = useState<ReasonFilter>('all');
   const [confirmResult, setConfirmResult] = useState<number | null>(null);
+  const [hoveredConflict, setHoveredConflict] = useState<string | null>(null);
 
   const [showCycleRuleModal, setShowCycleRuleModal] = useState(false);
   const [editingCycleRule, setEditingCycleRule] = useState<CycleRule | null>(null);
@@ -76,6 +75,32 @@ export default function CycleGenerator() {
 
   const selectedBabyData = babies.find((b) => b.id === selectedBaby);
 
+  const previewDateRange = useMemo(() => {
+    if (!currentCycleRule) return [];
+    try {
+      const start = parseISO(startDate);
+      const end = parseISO(endDate);
+      return eachDayOfInterval({ start, end });
+    } catch {
+      return [];
+    }
+  }, [startDate, endDate, currentCycleRule]);
+
+  const getMonthlyOffsetInfo = (date: Date, rule: CycleRule) => {
+    if (rule.cycleType !== 'monthly') return null;
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const cycleStartDay = Math.min(rule.startDay, getDaysInMonth(new Date(year, month, 1)));
+    const cycleStartDate = new Date(year, month, cycleStartDay);
+    const cycleStartWeekday = getDay(cycleStartDate);
+    let offset = getDay(date) - cycleStartWeekday;
+    if (offset < 0) offset += 7;
+    return {
+      monthDay: rule.startDay,
+      weekday: WEEKDAYS[getDay(date)],
+    };
+  };
+
   const filteredPreviews = useMemo(() => {
     let items = reasonFilter === 'all'
       ? previewAppointments
@@ -87,15 +112,21 @@ export default function CycleGenerator() {
     });
   }, [previewAppointments, reasonFilter]);
 
-  const groupedPreviews = useMemo(() => {
+  const groupedByDatePreviews = useMemo(() => {
     const groups: Record<string, PreviewAppointment[]> = {};
     filteredPreviews.forEach((p) => {
-      const key = `${p.babyId}||${p.poolId}||${p.date}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(p);
+      if (!groups[p.date]) groups[p.date] = [];
+      groups[p.date].push(p);
     });
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   }, [filteredPreviews]);
+
+  const getRuleIndicatorText = (rule: CycleRule) => {
+    if (rule.cycleType === 'weekly') {
+      return `当前规则：周周期，每周${WEEKDAYS[rule.startDay]}开始`;
+    }
+    return `当前规则：月周期，每月${rule.startDay}日开始算，固定时段按当周偏移`;
+  };
 
   const handlePreview = async () => {
     if (!currentCycleRule) return;
@@ -123,6 +154,7 @@ export default function CycleGenerator() {
     clearPreview();
     setGenerationResult(null);
     setReasonFilter('all');
+    setHoveredConflict(null);
   };
 
   const openAddCycleRule = () => {
@@ -197,17 +229,151 @@ export default function CycleGenerator() {
   const formatPreviewDate = (dateStr: string) => {
     try {
       const d = parseISO(dateStr);
-      return format(d, 'M月d日 EEE', { locale: zhCN });
+      return format(d, 'M月d日 EEEE', { locale: zhCN });
     } catch {
       return dateStr;
     }
   };
 
-  const renderStartDayDescription = (rule: CycleRule) => {
+  const isDateInGenerationRange = (date: Date, rule: CycleRule) => {
+    if (!selectedBabyData?.fixedSchedule || selectedBabyData.fixedSchedule.length === 0) return false;
+
     if (rule.cycleType === 'weekly') {
-      return `每周${WEEKDAYS[rule.startDay]}开始`;
+      const cycleStartDay = rule.startDay;
+      const currentDay = getDay(date);
+      const diff = ((cycleStartDay - currentDay) + 7) % 7;
+      const weekStart = addDays(date, -diff);
+
+      return selectedBabyData.fixedSchedule.some((schedule) => {
+        const dayDiff = schedule.dayOfWeek - getDay(weekStart);
+        const target = addDays(weekStart, dayDiff);
+        return format(target, 'yyyy-MM-dd') === format(date, 'yyyy-MM-dd');
+      });
+    } else {
+      return selectedBabyData.fixedSchedule.some((schedule) => {
+        const year = date.getFullYear();
+        const month = date.getMonth();
+        const cycleStartDay = Math.min(rule.startDay, getDaysInMonth(new Date(year, month, 1)));
+        const cycleStartDate = new Date(year, month, cycleStartDay);
+        let offset = schedule.dayOfWeek - getDay(cycleStartDate);
+        if (offset < 0) offset += 7;
+        const scheduleDate = addDays(cycleStartDate, offset);
+        return format(scheduleDate, 'yyyy-MM-dd') === format(date, 'yyyy-MM-dd');
+      });
     }
-    return `每月${rule.startDay}日开始算，固定时段按当周偏移`;
+  };
+
+  const getConflictTooltip = (item: PreviewAppointment) => {
+    if (item.reason !== 'conflict') return '';
+    const current = item.conflictCount || 0;
+    const capacity = item.poolCapacity || 0;
+    const exceed = (current + 1) - capacity;
+    return `时段预占冲突：当前${current}人 + 本次新增1人 = 超出容量${exceed}人`;
+  };
+
+  const renderCycleWeekHeader = () => {
+    if (!currentCycleRule) return null;
+
+    return (
+      <div className="mb-4">
+        <div className="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-primary-50 to-cyan-50 rounded-xl border border-primary-200">
+          <Calendar className="w-5 h-5 text-primary-600" />
+          <span className="font-medium text-primary-700">
+            {getRuleIndicatorText(currentCycleRule)}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDatePreviewTable = () => {
+    if (!currentCycleRule || previewDateRange.length === 0) return null;
+
+    const weekStartDays: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      weekStartDays.push((currentCycleRule.startDay + i) % 7);
+    }
+
+    const weeks: Date[][] = [];
+    let currentWeek: Date[] = [];
+
+    previewDateRange.forEach((date) => {
+      if (currentCycleRule.cycleType === 'weekly') {
+        if (getDay(date) === currentCycleRule.startDay && currentWeek.length > 0) {
+          weeks.push(currentWeek);
+          currentWeek = [];
+        }
+      } else {
+        if (date.getDate() === 1 && currentWeek.length > 0) {
+          weeks.push(currentWeek);
+          currentWeek = [];
+        }
+      }
+      currentWeek.push(date);
+    });
+    if (currentWeek.length > 0) {
+      weeks.push(currentWeek);
+    }
+
+    return (
+      <div className="mt-4">
+        <h4 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
+          <Calendar className="w-4 h-4 text-gray-500" />
+          生成范围预览表
+        </h4>
+        <div className="space-y-3">
+          {weeks.map((week, weekIdx) => (
+            <div key={weekIdx} className="border border-gray-200 rounded-xl overflow-hidden">
+              {currentCycleRule.cycleType === 'monthly' && (
+                <div className="px-3 py-2 bg-gray-50 border-b border-gray-200">
+                  <span className="text-xs font-medium text-gray-600">
+                    {format(week[0], 'yyyy年M月', { locale: zhCN })}
+                  </span>
+                </div>
+              )}
+              <div className="grid grid-cols-7 gap-px bg-gray-200">
+                {weekStartDays.map((dayIdx) => (
+                  <div key={dayIdx} className="px-2 py-1.5 bg-gray-50 text-center text-xs font-medium text-gray-600">
+                    {WEEKDAYS[dayIdx]}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-px bg-gray-200">
+                {weekStartDays.map((dayIdx) => {
+                  const date = week.find((d) => getDay(d) === dayIdx);
+                  if (!date) {
+                    return <div key={dayIdx} className="px-2 py-3 bg-white" />;
+                  }
+                  const isInRange = isDateInGenerationRange(date, currentCycleRule);
+                  const offsetInfo = getMonthlyOffsetInfo(date, currentCycleRule);
+                  return (
+                    <div
+                      key={dayIdx}
+                      className={`px-2 py-3 text-center ${
+                        isInRange
+                          ? 'bg-primary-50 border-l-2 border-primary-400'
+                          : 'bg-white'
+                      }`}
+                    >
+                      <div className={`text-sm font-medium ${
+                        isInRange ? 'text-primary-700' : 'text-gray-600'
+                      }`}>
+                        {date.getDate()}
+                      </div>
+                      {isInRange && offsetInfo && (
+                        <div className="mt-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-primary-100 rounded text-[10px] text-primary-700">
+                          月{offsetInfo.monthDay}→周{offsetInfo.weekday.replace('周', '')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -219,7 +385,7 @@ export default function CycleGenerator() {
         </div>
         <div className="flex gap-3">
           <button onClick={openAddCycleRule} className="btn-secondary flex items-center gap-2">
-            <Settings className="w-4 h-4" />
+            <Plus className="w-4 h-4" />
             周期规则
           </button>
         </div>
@@ -260,7 +426,11 @@ export default function CycleGenerator() {
                         )}
                       </div>
                       <p className="text-sm text-gray-500 mt-0.5">
-                        {rule.cycleType === 'weekly' ? '周周期' : '月周期'} · {renderStartDayDescription(rule)}
+                        {rule.cycleType === 'weekly' ? '周周期' : '月周期'} · {
+                          rule.cycleType === 'weekly'
+                            ? `每周${WEEKDAYS[rule.startDay]}开始`
+                            : `每月${rule.startDay}日开始算，固定时段按当周偏移`
+                        }
                       </p>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -273,7 +443,7 @@ export default function CycleGenerator() {
                           className="p-1.5 hover:bg-warning-50 rounded-lg"
                           title="设为默认"
                         >
-                          <StarOff className="w-3.5 h-3.5 text-warning-500" />
+                          <Star className="w-3.5 h-3.5 text-warning-500" />
                         </button>
                       )}
                       <button
@@ -302,7 +472,7 @@ export default function CycleGenerator() {
               ))}
               {cycleRules.length === 0 && (
                 <div className="text-center py-6 text-gray-400">
-                  <Settings className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                  <Repeat className="w-10 h-10 mx-auto mb-2 opacity-30" />
                   <p>暂无周期规则</p>
                 </div>
               )}
@@ -314,6 +484,7 @@ export default function CycleGenerator() {
               <Calendar className="w-5 h-5 text-primary-500" />
               生成设置
             </h3>
+            {renderCycleWeekHeader()}
             <div className="space-y-4">
               <div>
                 <label className="text-sm text-gray-600 mb-1 block">开始日期</label>
@@ -333,6 +504,7 @@ export default function CycleGenerator() {
                   className="input-field"
                 />
               </div>
+              {renderDatePreviewTable()}
               <button
                 onClick={handlePreview}
                 disabled={isPreviewing || !currentCycleRule}
@@ -341,7 +513,7 @@ export default function CycleGenerator() {
                 {isPreviewing ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
-                  <Eye className="w-4 h-4" />
+                  <Calendar className="w-4 h-4" />
                 )}
                 {isPreviewing ? '预览中...' : '批量生成'}
               </button>
@@ -364,7 +536,7 @@ export default function CycleGenerator() {
           <div className="card">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                <Baby className="w-5 h-5 text-primary-500" />
+                <Calendar className="w-5 h-5 text-primary-500" />
                 宝宝列表
               </h3>
               <span className="text-sm text-gray-500">共 {babies.length} 位宝宝</span>
@@ -518,7 +690,7 @@ export default function CycleGenerator() {
               {isConfirming ? (
                 <RefreshCw className="w-4 h-4 animate-spin" />
               ) : (
-                <CheckCircle2 className="w-4 h-4" />
+                <Check className="w-4 h-4" />
               )}
               {isConfirming ? '写入中...' : `确认写入 (${generationResult?.added || 0} 条)`}
             </button>
@@ -529,19 +701,25 @@ export default function CycleGenerator() {
           <div className="space-y-4">
             <div className="flex flex-wrap gap-3">
               <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-green-50 border border-green-200">
-                <CheckCircle2 className="w-4 h-4 text-green-600" />
+                <Check className="w-4 h-4 text-green-600" />
                 <span className="text-sm text-green-700 font-medium">新增</span>
                 <span className="text-lg font-bold text-green-700">{generationResult.added}</span>
               </div>
               <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-yellow-50 border border-yellow-200">
-                <Copy className="w-4 h-4 text-yellow-600" />
+                <RefreshCw className="w-4 h-4 text-yellow-600" />
                 <span className="text-sm text-yellow-700 font-medium">跳过重复</span>
                 <span className="text-lg font-bold text-yellow-700">{generationResult.skipped}</span>
               </div>
-              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-50 border border-red-200">
+              <div
+                className="relative flex items-center gap-2 px-3 py-2 rounded-xl bg-red-50 border border-red-200 cursor-help group"
+              >
                 <AlertTriangle className="w-4 h-4 text-red-600" />
                 <span className="text-sm text-red-700 font-medium">容量冲突未生成</span>
                 <span className="text-lg font-bold text-red-700">{generationResult.conflicts}</span>
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-800 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+                  这些时段即使按顺序生成也会超过容量，已标记为冲突
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800" />
+                </div>
               </div>
             </div>
 
@@ -575,33 +753,47 @@ export default function CycleGenerator() {
               ))}
             </div>
 
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="text-left px-4 py-3 text-gray-600 font-medium">宝宝</th>
-                    <th className="text-left px-4 py-3 text-gray-600 font-medium">泳池</th>
-                    <th className="text-left px-4 py-3 text-gray-600 font-medium">日期</th>
-                    <th className="text-left px-4 py-3 text-gray-600 font-medium">时段</th>
-                    <th className="text-center px-4 py-3 text-gray-600 font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedPreviews.map(([key, items]) => {
-                    const [babyId, poolId, date] = key.split('||');
-                    const baby = babies.find((b) => b.id === babyId);
-                    const pool = pools.find((p) => p.id === poolId);
-                    return items.map((item, idx) => (
-                      <tr
-                        key={`${key}-${idx}`}
-                        className="border-t border-gray-100 hover:bg-gray-50/50"
-                      >
-                        {idx === 0 && (
-                          <>
-                            <td
-                              className="px-4 py-3 font-medium text-gray-800"
-                              rowSpan={items.length}
-                            >
+            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+              {groupedByDatePreviews.map(([date, items]) => (
+                <div key={date} className="border border-gray-200 rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 sticky top-0">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-medium text-gray-800">
+                        {formatPreviewDate(date)}
+                      </h4>
+                      <span className="text-xs text-gray-500">
+                        {items.length} 条记录
+                      </span>
+                    </div>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50/50">
+                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">宝宝</th>
+                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">泳池</th>
+                        <th className="text-left px-4 py-2.5 text-gray-600 font-medium text-xs">时段</th>
+                        <th className="text-center px-4 py-2.5 text-gray-600 font-medium text-xs">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((item, idx) => {
+                        const baby = babies.find((b) => b.id === item.babyId);
+                        const pool = pools.find((p) => p.id === item.poolId);
+                        const itemKey = `${item.babyId}-${item.poolId}-${item.date}-${item.startTime}-${item.endTime}-${idx}`;
+                        const isConflict = item.reason === 'conflict';
+                        const offsetInfo = currentCycleRule && currentCycleRule.cycleType === 'monthly'
+                          ? getMonthlyOffsetInfo(parseISO(item.date), currentCycleRule)
+                          : null;
+                        return (
+                          <tr
+                            key={itemKey}
+                            className={`border-t border-gray-100 transition-colors ${
+                              isConflict ? 'bg-red-50/80 hover:bg-red-50' : 'hover:bg-gray-50/50'
+                            }`}
+                            onMouseEnter={() => isConflict && setHoveredConflict(itemKey)}
+                            onMouseLeave={() => setHoveredConflict(null)}
+                          >
+                            <td className="px-4 py-3 font-medium text-gray-800">
                               <div className="flex items-center gap-2">
                                 <div
                                   className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
@@ -612,52 +804,56 @@ export default function CycleGenerator() {
                                 {item.babyName}
                               </div>
                             </td>
-                            <td
-                              className="px-4 py-3 text-gray-600"
-                              rowSpan={items.length}
-                            >
+                            <td className="px-4 py-3 text-gray-600">
                               <div className="flex items-center gap-1.5">
                                 <Waves className="w-3.5 h-3.5 text-primary-400" />
                                 {pool?.name || item.poolName}
                               </div>
                             </td>
-                            <td
-                              className="px-4 py-3 text-gray-600"
-                              rowSpan={items.length}
-                            >
-                              {formatPreviewDate(date)}
+                            <td className="px-4 py-3 text-gray-600">
+                              <div className="flex items-center gap-2">
+                                <span>{item.startTime} - {item.endTime}</span>
+                                {offsetInfo && (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-primary-100 text-primary-700 rounded text-[10px]">
+                                    月{offsetInfo.monthDay}→周{offsetInfo.weekday.replace('周', '')}
+                                  </span>
+                                )}
+                              </div>
                             </td>
-                          </>
-                        )}
-                        <td className="px-4 py-3 text-gray-600">
-                          {item.startTime} - {item.endTime}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${REASON_COLORS[item.reason]}`}>
-                            {item.reason === 'conflict' && <AlertTriangle className="w-3 h-3" />}
-                            {item.reason === 'duplicate' && <Copy className="w-3 h-3" />}
-                            {item.reason === 'new' && <CheckCircle2 className="w-3 h-3" />}
-                            {REASON_LABELS[item.reason]}
-                          </span>
-                          {item.reason === 'conflict' && item.conflictCount !== undefined && (
-                            <span className="text-xs text-red-500 ml-1">
-                              ({item.conflictCount}/{item.poolCapacity})
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ));
-                  })}
-                  {groupedPreviews.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-10 text-center text-gray-400">
-                        <XCircle className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                        <p>无匹配记录</p>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                            <td className="px-4 py-3 text-center relative">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${REASON_COLORS[item.reason]}`}>
+                                {item.reason === 'conflict' && <AlertTriangle className="w-3 h-3" />}
+                                {item.reason === 'duplicate' && <RefreshCw className="w-3 h-3" />}
+                                {item.reason === 'new' && <Check className="w-3 h-3" />}
+                                {REASON_LABELS[item.reason]}
+                              </span>
+                              {isConflict && (
+                                <>
+                                  <span className="text-xs text-red-500 ml-1">
+                                    ({item.conflictCount}/{item.poolCapacity})
+                                  </span>
+                                  {hoveredConflict === itemKey && (
+                                    <div className="absolute right-0 top-full mt-1 px-3 py-2 bg-gray-800 text-white text-xs rounded-lg whitespace-nowrap z-20">
+                                      {getConflictTooltip(item)}
+                                      <div className="absolute bottom-full right-4 border-4 border-transparent border-b-gray-800" />
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+              {groupedByDatePreviews.length === 0 && (
+                <div className="text-center py-10 text-gray-400">
+                  <X className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p>无匹配记录</p>
+                </div>
+              )}
             </div>
 
             <div className="text-xs text-gray-400 text-right">
@@ -679,7 +875,7 @@ export default function CycleGenerator() {
               取消
             </button>
             <button onClick={handleSaveCycleRule} className="btn-primary">
-              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              <Check className="w-4 h-4 inline mr-1" />
               保存
             </button>
           </>
@@ -758,7 +954,7 @@ export default function CycleGenerator() {
               取消
             </button>
             <button onClick={handleSaveSchedule} className="btn-primary">
-              <CheckCircle2 className="w-4 h-4 inline mr-1" />
+              <Check className="w-4 h-4 inline mr-1" />
               保存
             </button>
           </>

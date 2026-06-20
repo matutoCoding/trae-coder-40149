@@ -130,6 +130,7 @@ function generateAppointments(): Appointment[] {
           status,
           cycleRuleId: 'cycle-1',
           isFromCycle: true,
+          isWaitlist: false,
         });
       });
     });
